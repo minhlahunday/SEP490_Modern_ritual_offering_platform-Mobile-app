@@ -1,12 +1,77 @@
-// React Native Mock Polyfills for web globals
-class MockLocalStorage {
-  private store: Record<string, string> = {};
-  getItem(key: string) { return this.store[key] || null; }
-  setItem(key: string, value: string) { this.store[key] = value; }
-  removeItem(key: string) { delete this.store[key]; }
-  clear() { this.store = {}; }
+import * as SecureStore from 'expo-secure-store';
+
+const TOKEN_KEY = 'auth_token';
+const REFRESH_TOKEN_KEY = 'refresh_token';
+const USER_KEY = 'current_user';
+
+// In-memory cache for synchronous access
+let _token: string | null = null;
+let _refreshToken: string | null = null;
+let _currentUser: LoginResponse | null = null;
+
+// Helper to save to SecureStore
+async function saveAuthData(data: LoginResponse) {
+  _token = data.token;
+  _refreshToken = data.refreshToken;
+  _currentUser = data;
+
+  try {
+    await Promise.all([
+      SecureStore.setItemAsync(TOKEN_KEY, data.token),
+      SecureStore.setItemAsync(REFRESH_TOKEN_KEY, data.refreshToken),
+      SecureStore.setItemAsync(USER_KEY, JSON.stringify(data)),
+    ]);
+  } catch (error) {
+    console.error('❌ SecureStore save error:', error);
+  }
 }
-const localStorage = new MockLocalStorage();
+
+// Helper to clear SecureStore
+async function clearAuthData() {
+  _token = null;
+  _refreshToken = null;
+  _currentUser = null;
+
+  try {
+    await Promise.all([
+      SecureStore.setItemAsync(TOKEN_KEY, ''),
+      SecureStore.setItemAsync(REFRESH_TOKEN_KEY, ''),
+      SecureStore.setItemAsync(USER_KEY, ''),
+    ]);
+    // More robust removal
+    await SecureStore.deleteItemAsync(TOKEN_KEY);
+    await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
+    await SecureStore.deleteItemAsync(USER_KEY);
+  } catch (error) {
+    console.error('❌ SecureStore clear error:', error);
+  }
+}
+
+/**
+ * Initialize Auth State from SecureStore
+ * Should be called at app startup
+ */
+export async function initAuth(): Promise<void> {
+  try {
+    const [token, refreshToken, userJson] = await Promise.all([
+      SecureStore.getItemAsync(TOKEN_KEY),
+      SecureStore.getItemAsync(REFRESH_TOKEN_KEY),
+      SecureStore.getItemAsync(USER_KEY),
+    ]);
+
+    if (token && refreshToken && userJson) {
+      _token = token;
+      _refreshToken = refreshToken;
+      _currentUser = JSON.parse(userJson);
+      console.log('✅ Auth session restored for:', _currentUser?.email);
+    } else {
+      console.log('ℹ️ No existing auth session found');
+    }
+  } catch (error) {
+    console.error('❌ initAuth error:', error);
+  }
+}
+
 const window = { location: { href: '', hostname: '' } };
 
 const API_BASE_URL = 'https://vietritual.click';
@@ -173,6 +238,10 @@ export async function login(credentials: LoginRequest): Promise<LoginResponse> {
       };
 
       console.log(' Login Response (normalized):', loginResponse);
+      
+      // PERSIST DATA
+      await saveAuthData(loginResponse);
+      
       return loginResponse;
     } else {
       console.error(' Login failed:', data.errorMessages);
@@ -392,13 +461,13 @@ export async function logoutApi(): Promise<void> {
       return;
     }
 
-    // Get refresh token from localStorage
-    const refreshToken = localStorage.getItem('smart-child-refresh-token');
+    // Get refresh token from cache
+    const refreshToken = _refreshToken;
     if (!refreshToken) {
       console.warn('⚠️ No refresh token found, proceeding with logout');
     }
 
-    const response = await fetch('/api/auth/logout', {
+    const response = await fetch(`${API_BASE_URL}/api/auth/logout`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -423,39 +492,54 @@ export async function logoutApi(): Promise<void> {
 }
 
 /**
- * Logout - Clear ALL local storage data
+ * Logout - Clear persistent storage and cache
  */
-export function logout(): void {
-  // Xóa tất cả dữ liệu trong localStorage
-  localStorage.clear();
-  console.log('✅ Logged out successfully - All localStorage cleared');
-}
-
-/**
- * Complete logout - API call + clear storage + redirect
- */
-export async function logoutComplete(): Promise<void> {
+export async function logout(): Promise<void> {
   try {
-    // Try API logout first
-    await logoutApi();
+    // 1. Optional API logout call (don't let it block local clear)
+    await logoutApi().catch(err => console.warn('⚠️ API logout failed:', err));
+    
+    // 2. Clear local storage and cache
+    await clearAuthData();
+    
+    console.log('✅ Logged out successfully');
   } catch (error) {
-    console.warn('API logout failed, continuing with local logout');
-  } finally {
-    // Always clear local storage regardless of API result
-    logout();
-    // Reload page để về trang login
-    window.location.href = '/';
+    console.error('❌ Logout error:', error);
+    // Force clear memory cache even if storage fails
+    _token = null;
+    _refreshToken = null;
+    _currentUser = null;
   }
 }
 
 /**
- * Logout và redirect về trang login (legacy - kept for compatibility)
+ * Get current user from memory cache
  */
-export function logoutAndRedirect(): void {
-  logout();
-  // Reload page để về trang login
-  window.location.href = '/';
+export function getCurrentUser(): LoginResponse | null {
+  return _currentUser;
 }
+
+/**
+ * Get current token from memory cache
+ */
+export function getAuthToken(): string | null {
+  return _token;
+}
+
+/**
+ * Get refresh token from memory cache
+ */
+export function getRefreshToken(): string | null {
+  return _refreshToken;
+}
+
+/**
+ * Check if user is logged in
+ */
+export function isLoggedIn(): boolean {
+  return !!_token;
+}
+
 
 // ==================== GET CURRENT USER ====================
 
@@ -523,7 +607,7 @@ export interface UpdateVendorProfileRequest {
   dailyCapacity?: number;
   taxCode?: string;
   businessType?: 'Individual' | 'Company' | string;
-  shopAvatarFile?: File | null;
+  shopAvatarFile?: any;
 }
 
 export interface VendorDocument {
@@ -555,13 +639,13 @@ export interface VendorRegistrationResponse {
 
 export interface VendorDocumentRequest {
   documentType: number;
-  file: File;
+  file: any;
 }
 
 export interface RegisterVendorRequest {
   shopName: string;
   shopDescription: string;
-  shopAvatarUrl: File;
+  shopAvatarUrl: any;
   businessType: string;
   taxCode: string;
   shopAddressText: string;
@@ -601,7 +685,7 @@ export async function getProfile(): Promise<UserProfile> {
       const currentUser = getCurrentUser();
       return {
         profileId: '',
-        userId: currentUser?.id || '',
+        userId: currentUser?.userId || '',
         fullName: '',
         phoneNumber: '',
         avatarUrl: null,
@@ -960,7 +1044,7 @@ export interface UpdateProfileRequest {
   addressText: string;
   latitude: number;
   longitude: number;
-  avatarFile?: File | null;
+  avatarFile?: any;
 }
 
 export async function updateProfile(profileData: UpdateProfileRequest): Promise<UserProfile> {
@@ -1042,36 +1126,6 @@ export async function updateProfile(profileData: UpdateProfileRequest): Promise<
     console.error('❌ Error updating profile:', error);
     throw error;
   }
-}
-
-// ==================== HELPER FUNCTIONS ====================
-
-/**
- * Get current logged-in user from localStorage
- */
-export function getCurrentUser(): CurrentUser | null {
-  try {
-    const userStr = localStorage.getItem('smart-child-user');
-    if (!userStr) return null;
-    return JSON.parse(userStr);
-  } catch (error) {
-    console.error('❌ Error getting current user:', error);
-    return null;
-  }
-}
-
-/**
- * Get current auth token from localStorage
- */
-export function getAuthToken(): string | null {
-  return localStorage.getItem('smart-child-token');
-}
-
-/**
- * Check if user is authenticated
- */
-export function isAuthenticated(): boolean {
-  return !!getAuthToken();
 }
 
 // ==================== FORGOT PASSWORD ====================
