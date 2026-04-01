@@ -22,7 +22,7 @@ export interface ApiPackage {
 
 export interface ApiResponse<T> {
   statusCode: string;
-  isSucceeded: boolean;
+  isSuccess: boolean;
   errorMessages: string[];
   result: T;
 }

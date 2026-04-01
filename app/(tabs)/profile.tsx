@@ -1,211 +1,252 @@
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-} from 'react-native';
-import { Settings, Bell, Lock, Circle as HelpCircle, LogOut, ChevronRight, User } from 'lucide-react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, SafeAreaView, Image } from 'react-native';
+import { User, LogOut, Star, Store, MapPin, ChevronLeft, Package } from 'lucide-react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
+import { getCurrentUser, UserProfile, getProfile, logout } from '@/services/auth';
+import toast from '@/services/toast';
 
-const menuItems = [
-  { id: 1, icon: Settings, label: 'Cài đặt', iconColor: '#007AFF' },
-  { id: 2, icon: Bell, label: 'Thông báo', iconColor: '#FF9500' },
-  { id: 3, icon: Lock, label: 'Quyền riêng tư', iconColor: '#34C759' },
-  { id: 4, icon: HelpCircle, label: 'Trợ giúp', iconColor: '#5856D6' },
-  { id: 5, icon: LogOut, label: 'Đăng xuất', iconColor: '#FF3B30' },
-];
+import ProfileInfoTab from '@/components/ProfileInfoTab';
+import VendorRegisterTab from '@/components/VendorRegisterTab';
 
-export default function ProfileTab() {
+export default function ProfileScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams();
+  const isFirstTimeSetup = params.firstTime === 'true';
+
+  const isFocused = useIsFocused();
+  const [user, setUser] = useState(getCurrentUser());
+  const [activeTab, setActiveTab] = useState<'info' | 'reviews' | 'vendor-register'>(
+    (params.tab as any) || 'info'
+  );
+  
+  const [loading, setLoading] = useState(true);
+  const [isEditing, setIsEditing] = useState(isFirstTimeSetup);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+
+  // Refresh user state when tab is focused
+  useEffect(() => {
+    if (isFocused) {
+      const currentUser = getCurrentUser();
+      setUser(currentUser);
+      
+      // If we just logged in, we should reload the profile data
+      if (currentUser && !profile) {
+        setLoading(true);
+      }
+    }
+  }, [isFocused]);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadProfile = async () => {
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+      try {
+        setLoading(true);
+        const data = await getProfile();
+        if (mounted) {
+          setProfile(data);
+          
+          const isProfileIncomplete = !data.fullName || !data.phoneNumber;
+          if (isFirstTimeSetup && isProfileIncomplete) {
+            setIsEditing(true);
+          } else if (isFirstTimeSetup && !isProfileIncomplete) {
+            // Already complete, remove firstTime
+            router.replace('/profile');
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        toast.error('Không thể tải thông tin cá nhân. Vui lòng thử lại.');
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+    loadProfile();
+    return () => { mounted = false; };
+  }, [user, isFirstTimeSetup]);
+
+  const handleLogout = async () => {
+    const { isConfirmed } = await toast.confirm({
+      title: 'Đăng xuất',
+      text: 'Bạn có chắc chắn muốn đăng xuất?',
+      confirmButtonText: 'Đăng xuất',
+      cancelButtonText: 'Đóng',
+    });
+    if (isConfirmed) {
+      logout();
+      setUser(null);
+      toast.success('Đã đăng xuất thành công');
+      router.replace('/login');
+    }
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.centerContainer}>
+        <ActivityIndicator size="large" color="#000" />
+        <Text style={{ marginTop: 12, color: '#6b7280' }}>Đang tải thông tin...</Text>
+      </View>
+    );
+  }
+
+  // GUEST STATE
+  if (!user) {
+    return (
+      <View style={[styles.centerContainer, { backgroundColor: '#f9fafb' }]}>
+        <User color="#b45309" size={80} style={{ marginBottom: 20 }} />
+        <Text style={styles.notLoggedInTitle}>Bạn chưa đăng nhập</Text>
+        <Text style={styles.notLoggedInDesc}>
+          Vui lòng đăng nhập để xem thông tin cá nhân và quản lý đơn hàng.
+        </Text>
+        <TouchableOpacity 
+          style={styles.loginBtn}
+          onPress={() => router.push('/login')}
+        >
+          <Text style={styles.loginBtnText}>Đăng nhập ngay</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   return (
-    <View style={styles.container}>
-      <ScrollView style={styles.scrollView}>
-        <View style={styles.profileHeader}>
-          <View style={styles.avatarContainer}>
-            <View style={styles.avatar}>
-              <User color="#007AFF" size={48} />
+    <SafeAreaView style={styles.container}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+        
+        {/* HEADER */}
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.avatarContainer} onPress={() => {}}>
+            {profile?.avatarUrl ? (
+              <Image source={{ uri: profile.avatarUrl }} style={styles.avatarImg} />
+            ) : (
+              <View style={styles.avatarPlaceholder}>
+                <User color="#fff" size={40} />
+              </View>
+            )}
+            <View style={styles.editAvatarBadge}>
+              <Text style={{ fontSize: 10, color: '#fff', fontWeight: 'bold' }}>EDIT</Text>
             </View>
+          </TouchableOpacity>
+
+          <View style={styles.headerInfo}>
+            <Text style={styles.headerName}>{profile?.fullName || user.name}</Text>
+            {profile?.isVendor && (
+              <View style={styles.vendorBadge}>
+                <Store size={12} color="#fff" />
+                <Text style={styles.vendorText}>Tài khoản Cửa hàng</Text>
+              </View>
+            )}
+            <Text style={styles.headerEmail}>{user.email || 'N/A'}</Text>
           </View>
-          <Text style={styles.name}>Người dùng</Text>
-          <Text style={styles.email}>user@example.com</Text>
-          <TouchableOpacity style={styles.editButton}>
-            <Text style={styles.editButtonText}>Chỉnh sửa hồ sơ</Text>
+          
+          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
+            <LogOut color="#ef4444" size={24} />
           </TouchableOpacity>
         </View>
 
-        <View style={styles.statsContainer}>
-          <View style={styles.statItem}>
-            <Text style={styles.statNumber}>0</Text>
-            <Text style={styles.statLabel}>Bài viết</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statNumber}>0</Text>
-            <Text style={styles.statLabel}>Theo dõi</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statNumber}>0</Text>
-            <Text style={styles.statLabel}>Đang theo dõi</Text>
-          </View>
+        {/* TAB NAVIGATION */}
+        <View style={styles.tabContainer}>
+          <TouchableOpacity 
+            style={[styles.tabBtn, activeTab === 'info' && styles.tabBtnActive]} 
+            onPress={() => setActiveTab('info')}
+          >
+            <User size={18} color={activeTab === 'info' ? '#000' : '#6b7280'} />
+            <Text style={[styles.tabText, activeTab === 'info' && styles.tabTextActive]}>Cá nhân</Text>
+          </TouchableOpacity>
+           <TouchableOpacity 
+            style={[styles.tabBtn, activeTab === 'reviews' && styles.tabBtnActive]} 
+            onPress={() => setActiveTab('reviews')}
+          >
+            <Star size={18} color={activeTab === 'reviews' ? '#000' : '#6b7280'} />
+            <Text style={[styles.tabText, activeTab === 'reviews' && styles.tabTextActive]}>Đánh giá</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.tabBtn} 
+            onPress={() => router.push('/orders' as any)}
+          >
+            <Package size={18} color="#6b7280" />
+            <Text style={styles.tabText}>Đơn hàng</Text>
+          </TouchableOpacity>
+
+          {profile?.isVendor === false && (
+            <TouchableOpacity 
+              style={[styles.tabBtn, activeTab === 'vendor-register' && styles.tabBtnActive]} 
+              onPress={() => setActiveTab('vendor-register')}
+            >
+              <Store size={18} color={activeTab === 'vendor-register' ? '#000' : '#6b7280'} />
+              <Text style={[styles.tabText, activeTab === 'vendor-register' && styles.tabTextActive]}>Bán hàng</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Cài đặt</Text>
-          <View style={styles.menuContainer}>
-            {menuItems.map((item, index) => {
-              const IconComponent = item.icon;
-              return (
-                <TouchableOpacity
-                  key={item.id}
-                  style={[
-                    styles.menuItem,
-                    index === menuItems.length - 1 && styles.lastMenuItem,
-                  ]}>
-                  <View style={styles.menuItemLeft}>
-                    <View
-                      style={[
-                        styles.menuIconContainer,
-                        { backgroundColor: `${item.iconColor}15` },
-                      ]}>
-                      <IconComponent color={item.iconColor} size={20} />
-                    </View>
-                    <Text style={styles.menuItemText}>{item.label}</Text>
-                  </View>
-                  <ChevronRight color="#C7C7CC" size={20} />
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
+        {/* TAB CONTENT */}
+        <View style={styles.tabContent}>
+          {activeTab === 'info' && (
+            <ProfileInfoTab 
+              profile={profile} 
+              isEditing={isEditing} 
+              setIsEditing={setIsEditing} 
+              onReload={async () => {
+                const updated = await getProfile();
+                setProfile(updated);
+              }}
+            />
+          )}
+          
+          {activeTab === 'reviews' && (
+             <View style={styles.emptyTab}>
+               <Star color="#d1d5db" size={48} />
+               <Text style={{ marginTop: 16, color: '#9ca3af' }}>Chưa có đánh giá nào</Text>
+             </View>
+          )}
 
-        <View style={styles.footer}>
-          <Text style={styles.version}>Phiên bản 1.0.0</Text>
+          {activeTab === 'vendor-register' && (
+            <VendorRegisterTab />
+          )}
         </View>
       </ScrollView>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F8F8F8',
+  container: { flex: 1, backgroundColor: '#f3f4f6' },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' },
+  notLoggedInTitle: { fontSize: 20, fontWeight: 'bold', color: '#111827', marginBottom: 10 },
+  notLoggedInDesc: { fontSize: 14, color: '#6b7280', marginHorizontal: 40, textAlign: 'center', marginBottom: 30 },
+  loginBtn: { backgroundColor: '#111827', paddingVertical: 14, paddingHorizontal: 40, borderRadius: 12 },
+  loginBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  header: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    backgroundColor: '#fff', 
+    padding: 24, 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#e5e7eb' 
   },
-  scrollView: {
-    flex: 1,
+  avatarContainer: { position: 'relative', width: 80, height: 80, borderRadius: 40, marginRight: 16 },
+  avatarPlaceholder: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#9ca3af', justifyContent: 'center', alignItems: 'center' },
+  avatarImg: { width: 80, height: 80, borderRadius: 40 },
+  editAvatarBadge: { 
+    position: 'absolute', bottom: 0, right: 0, backgroundColor: '#111827', 
+    width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2, borderColor: '#fff'
   },
-  profileHeader: {
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    paddingVertical: 32,
-    paddingHorizontal: 20,
-  },
-  avatarContainer: {
-    marginBottom: 16,
-  },
-  avatar: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: '#F8F8F8',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  name: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#000',
-    marginBottom: 4,
-  },
-  email: {
-    fontSize: 16,
-    color: '#8E8E93',
-    marginBottom: 16,
-  },
-  editButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 24,
-    borderRadius: 20,
-    backgroundColor: '#007AFF',
-  },
-  editButtonText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  statsContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    marginTop: 12,
-    paddingVertical: 20,
-    paddingHorizontal: 20,
-  },
-  statItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  statDivider: {
-    width: 1,
-    backgroundColor: '#F8F8F8',
-  },
-  statNumber: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#000',
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 14,
-    color: '#8E8E93',
-  },
-  section: {
-    paddingTop: 20,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#000',
-    paddingHorizontal: 20,
-    marginBottom: 12,
-  },
-  menuContainer: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 20,
-  },
-  menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F8F8F8',
-  },
-  lastMenuItem: {
-    borderBottomWidth: 0,
-  },
-  menuItemLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  menuIconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  menuItemText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: '#000',
-  },
-  footer: {
-    padding: 32,
-    alignItems: 'center',
-  },
-  version: {
-    fontSize: 14,
-    color: '#8E8E93',
-  },
+  headerInfo: { flex: 1 },
+  headerName: { fontSize: 20, fontWeight: 'bold', color: '#111827', marginBottom: 4 },
+  vendorBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#10b981', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, alignSelf: 'flex-start', marginBottom: 4, gap: 4 },
+  vendorText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  headerEmail: { fontSize: 14, color: '#6b7280' },
+  logoutBtn: { padding: 8, backgroundColor: '#fef2f2', borderRadius: 12 },
+  tabContainer: { flexDirection: 'row', backgroundColor: '#fff', paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb' },
+  tabBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 16, borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  tabBtnActive: { borderBottomColor: '#000' },
+  tabText: { fontSize: 14, fontWeight: '600', color: '#6b7280' },
+  tabTextActive: { color: '#000' },
+  tabContent: { padding: 16 },
+  emptyTab: { alignItems: 'center', justifyContent: 'center', paddingVertical: 64, backgroundColor: '#fff', borderRadius: 16 }
 });
