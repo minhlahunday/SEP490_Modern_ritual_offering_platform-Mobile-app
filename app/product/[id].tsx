@@ -16,6 +16,7 @@ import { cartService } from '../../services/cartService';
 import toast from '../../services/toast';
 
 const { width } = Dimensions.get('window');
+const isNarrowScreen = width < 360;
 
 export default function ProductDetailPage() {
   const { id } = useExpoParams<{ id: string }>();
@@ -202,6 +203,15 @@ export default function ProductDetailPage() {
   const selectedVariantMeta = Array.isArray(packageMeta?.packageVariants)
     ? packageMeta.packageVariants[selectedVariantIndex]
     : null;
+  const variantImages = Array.from(new Set([
+    String(selectedVariantMeta?.imageUrl || '').trim(),
+    ...(Array.isArray(selectedVariantMeta?.variantImages) ? selectedVariantMeta.variantImages : []),
+  ]))
+    .map((url) => String(url || '').trim())
+    .filter(Boolean);
+
+  const displayImages = variantImages.length > 0 ? variantImages : productImages;
+
   const selectedVariantDescription =
     selectedVariantMeta?.description ||
     product?.variants?.[selectedVariantIndex]?.description ||
@@ -209,11 +219,21 @@ export default function ProductDetailPage() {
     product?.description ||
     '';
 
+  useEffect(() => {
+    setCurrentMainImage(0);
+  }, [selectedVariantIndex]);
+
+  useEffect(() => {
+    if (currentMainImage > displayImages.length - 1) {
+      setCurrentMainImage(0);
+    }
+  }, [displayImages.length, currentMainImage]);
+
   const handleAddToCart = async () => {
     const user = getCurrentUser();
     if (!user) {
       toast.warning('Vui lòng đăng nhập để thêm vào giỏ hàng');
-      router.push('/profile'); // No auth page currently, direct to profile
+      router.push('/login');
       return;
     }
 
@@ -245,7 +265,7 @@ export default function ProductDetailPage() {
     const user = getCurrentUser();
     if (!user) {
       toast.warning('Vui lòng đăng nhập để mua hàng');
-      router.push('/profile');
+      router.push('/login');
       return;
     }
 
@@ -257,22 +277,33 @@ export default function ProductDetailPage() {
 
     setBuyingNow(true);
     try {
-      const success = await cartService.addToCart({
+      const cartItemId = await cartService.addToCartAndResolveItemId({
         variantId: selectedVariant.variantId,
         quantity
       });
-      if (success) {
-        // Mock navigate to checkout or cart
-        router.push('/(tabs)');
-        toast.success('Đã chuyển tới giỏ hàng');
+
+      if (cartItemId && cartItemId > 0) {
+        router.push(`/checkout?cartItemId=${cartItemId}` as any);
+        toast.success('Đang chuyển đến thanh toán');
       } else {
-        toast.error('Không thể mua hàng. Vui lòng thử lại.');
+        // Fallback to cart if backend did not return/resolve cart item id
+        router.push('/(tabs)/cart' as any);
+        toast.info('Đã thêm vào giỏ hàng. Vui lòng tiếp tục thanh toán.');
       }
     } catch (error) {
       toast.error('Đã xảy ra lỗi. Vui lòng thử lại.');
     } finally {
       setBuyingNow(false);
     }
+  };
+
+  const handleViewShop = () => {
+    const vendorId = vendor?.profileId || vendor?.vendorProfileId;
+    if (!vendorId) {
+      toast.error('Khong tim thay thong tin cua hang');
+      return;
+    }
+    router.push(`/vendor/${vendorId}` as any);
   };
 
   const formatPrice = (price: number) => {
@@ -324,13 +355,13 @@ export default function ProductDetailPage() {
           {/* Image Gallery */}
           <View style={styles.imageContainer}>
             <Image 
-              source={{ uri: productImages[currentMainImage] || 'https://via.placeholder.com/400' }} 
+              source={{ uri: displayImages[currentMainImage] || 'https://via.placeholder.com/400' }} 
               style={styles.mainImage} 
               resizeMode="cover"
             />
           </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.thumbnailsContainer}>
-            {productImages.map((imgUrl, i) => (
+            {displayImages.map((imgUrl, i) => (
               <TouchableOpacity key={i} onPress={() => setCurrentMainImage(i)} style={[styles.thumbnailWrapper, currentMainImage === i && styles.thumbnailActive]}>
                 <Image source={{ uri: imgUrl }} style={styles.thumbnail} />
               </TouchableOpacity>
@@ -355,7 +386,7 @@ export default function ProductDetailPage() {
 
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
-                <Star size={16} color="#d97706" fill="#d97706" />
+                <Star size={16} color="#fbbf24" fill="#fbbf24" />
                 <Text style={styles.statTextBold}>{product.rating}</Text>
                 <Text style={styles.statText}>({reviewsToDisplay.length} đánh giá)</Text>
               </View>
@@ -374,7 +405,10 @@ export default function ProductDetailPage() {
               {product.variants?.map((variant, index) => (
                 <TouchableOpacity 
                   key={variant.variantId} 
-                  onPress={() => setSelectedVariantIndex(index)}
+                  onPress={() => {
+                    setSelectedVariantIndex(index);
+                    setCurrentMainImage(0);
+                  }}
                   style={[styles.variantCard, selectedVariantIndex === index && styles.variantCardActive]}
                 >
                   <Text style={[styles.variantTier, selectedVariantIndex === index && styles.variantTierActive]}>{variant.tier}</Text>
@@ -395,7 +429,7 @@ export default function ProductDetailPage() {
             <View style={styles.itemsList}>
               {product.variants?.[selectedVariantIndex]?.items?.map((item, idx) => (
                 <View key={idx} style={styles.listItem}>
-                  <CheckCircle size={14} color="#b45309" />
+                  <CheckCircle size={14} color="#000" />
                   <Text style={styles.listItemText}>{item}</Text>
                 </View>
               ))}
@@ -404,8 +438,8 @@ export default function ProductDetailPage() {
 
           {/* Vendor Profile */}
           {vendor && (
-            <View style={styles.vendorContainer}>
-              <View style={styles.vendorHeader}>
+              <View style={styles.vendorContainer}>
+                <View style={[styles.vendorHeader, isNarrowScreen && styles.vendorHeaderNarrow]}>
                 <View style={styles.vendorAvatarWrapper}>
                   {vendor.shopAvatarUrl ? (
                     <Image source={{ uri: vendor.shopAvatarUrl }} style={styles.vendorAvatar} />
@@ -420,25 +454,28 @@ export default function ProductDetailPage() {
                     <Text style={styles.statusText}>Cửa hàng đối tác</Text>
                   </View>
                 </View>
-                <TouchableOpacity style={styles.vendorViewBtn}>
+                <TouchableOpacity
+                  style={[styles.vendorViewBtn, isNarrowScreen && styles.vendorViewBtnNarrow]}
+                  onPress={handleViewShop}
+                >
                   <Text style={styles.vendorViewBtnText}>Xem Shop</Text>
                 </TouchableOpacity>
               </View>
               
               <View style={styles.vendorStats}>
-                <View style={styles.vendorStatItem}>
+                <View style={[styles.vendorStatItem, isNarrowScreen && styles.vendorStatItemNarrow]}>
                   <Text style={styles.vStatLabel}>Đánh giá</Text>
                   <Text style={styles.vStatValue}>{vendorAvgRating} <Text style={{fontSize:10, color:'#b45309'}}>/5</Text></Text>
                 </View>
-                <View style={styles.vendorStatItem}>
+                <View style={[styles.vendorStatItem, isNarrowScreen && styles.vendorStatItemNarrow]}>
                   <Text style={styles.vStatLabel}>Sản phẩm</Text>
                   <Text style={styles.vStatValue}>{vendorProducts.length || '24'}</Text>
                 </View>
-                <View style={styles.vendorStatItem}>
+                <View style={[styles.vendorStatItem, isNarrowScreen && styles.vendorStatItemNarrow]}>
                   <Text style={styles.vStatLabel}>Tham gia</Text>
                   <Text style={styles.vStatValue}>12 <Text style={{fontSize:10, color:'#b45309'}}>Tháng</Text></Text>
                 </View>
-                <View style={styles.vendorStatItem}>
+                <View style={[styles.vendorStatItem, isNarrowScreen && styles.vendorStatItemNarrow]}>
                   <Text style={styles.vStatLabel}>Hạng</Text>
                   <Text style={[styles.vStatValue, {color: '#d97706'}]}>{vendor.tierName || 'Vàng'}</Text>
                 </View>
@@ -562,13 +599,13 @@ export default function ProductDetailPage() {
             )}
           </View>
           
-          <View style={{ height: 100 }} /> 
+          <View style={{ height: isNarrowScreen ? 124 : 110 }} /> 
         </ScrollView>
       </KeyboardAvoidingView>
 
       {/* Bottom Action Bar */}
-      <View style={styles.bottomBar}>
-        <View style={styles.quantityControl}>
+      <View style={[styles.bottomBar, isNarrowScreen && styles.bottomBarNarrow]}>
+        <View style={[styles.quantityControl, isNarrowScreen && styles.quantityControlNarrow]}>
           <TouchableOpacity style={styles.qtyBtn} onPress={() => setQuantity(Math.max(1, quantity - 1))}>
             <Minus size={16} color="#333" />
           </TouchableOpacity>
@@ -579,7 +616,7 @@ export default function ProductDetailPage() {
         </View>
 
         <TouchableOpacity 
-          style={styles.addToCartBtnBottom} 
+          style={[styles.addToCartBtnBottom, isNarrowScreen && styles.addToCartBtnBottomNarrow]} 
           onPress={handleAddToCart}
           disabled={addingToCart}
         >
@@ -587,7 +624,7 @@ export default function ProductDetailPage() {
         </TouchableOpacity>
 
         <TouchableOpacity 
-          style={styles.buyNowBtn} 
+          style={[styles.buyNowBtn, isNarrowScreen && styles.buyNowBtnNarrow]} 
           onPress={handleBuyNow}
           disabled={buyingNow}
         >
@@ -610,7 +647,7 @@ const styles = StyleSheet.create({
   
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#FFF',
+    paddingHorizontal: 14, paddingVertical: 10, backgroundColor: '#FFF',
     borderBottomWidth: 1, borderBottomColor: '#F0F0F0'
   },
   headerBtn: { padding: 4 },
@@ -618,7 +655,7 @@ const styles = StyleSheet.create({
   headerSpacer: { width: 32 },
 
   scrollView: { flex: 1 },
-  imageContainer: { width: width, height: width * 0.8, backgroundColor: '#F5F5F5' },
+  imageContainer: { width: width, height: width * 0.86, backgroundColor: '#F5F5F5' },
   mainImage: { width: '100%', height: '100%' },
   thumbnailsContainer: { padding: 16, gap: 12 },
   thumbnailWrapper: {
@@ -628,15 +665,15 @@ const styles = StyleSheet.create({
   thumbnailActive: { borderColor: '#b45309' },
   thumbnail: { width: '100%', height: '100%' },
 
-  infoSection: { padding: 20, backgroundColor: '#FFF', marginBottom: 12 },
+  infoSection: { padding: 16, backgroundColor: '#FFF', marginBottom: 12 },
   tagWrapper: { 
     alignSelf: 'flex-start', backgroundColor: '#fef3c7', paddingHorizontal: 8, paddingVertical: 4, 
     borderRadius: 6, marginBottom: 12 
   },
   tagText: { fontSize: 10, fontWeight: '900', color: '#d97706', textTransform: 'uppercase' },
-  productName: { fontSize: 22, fontWeight: '900', color: '#1A1A1A', lineHeight: 30, marginBottom: 12 },
-  priceRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
-  priceText: { fontSize: 28, fontWeight: '900', color: '#b45309' },
+  productName: { fontSize: 21, fontWeight: '900', color: '#1A1A1A', lineHeight: 29, marginBottom: 12 },
+  priceRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' },
+  priceText: { fontSize: 26, fontWeight: '900', color: '#000' },
   originalPriceText: { fontSize: 16, color: '#94a3b8', textDecorationLine: 'line-through' },
   statsRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   statItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -644,7 +681,7 @@ const styles = StyleSheet.create({
   statText: { fontSize: 14, color: '#64748b' },
   statTextItalic: { fontSize: 13, color: '#334155', fontStyle: 'italic', fontWeight: '600' },
 
-  section: { padding: 20, backgroundColor: '#FFF', marginBottom: 12 },
+  section: { padding: 16, backgroundColor: '#FFF', marginBottom: 12 },
   sectionTitle: { fontSize: 12, fontWeight: '900', color: '#94a3b8', letterSpacing: 1, marginBottom: 16 },
   variantsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   variantCard: { 
@@ -664,6 +701,7 @@ const styles = StyleSheet.create({
 
   vendorContainer: { backgroundColor: '#1e293b', margin: 16, borderRadius: 24, padding: 20 },
   vendorHeader: { flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 20 },
+  vendorHeaderNarrow: { flexWrap: 'wrap', gap: 12 },
   vendorAvatarWrapper: { 
     width: 64, height: 64, borderRadius: 20, backgroundColor: '#FFF', 
     justifyContent: 'center', alignItems: 'center', overflow: 'hidden'
@@ -676,17 +714,19 @@ const styles = StyleSheet.create({
   statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#10b981' },
   statusText: { fontSize: 11, fontWeight: '700', color: '#94a3b8', letterSpacing: 1, textTransform: 'uppercase' },
   vendorViewBtn: { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 10 },
+  vendorViewBtnNarrow: { marginLeft: 80 },
   vendorViewBtnText: { color: '#FFF', fontSize: 11, fontWeight: '900', textTransform: 'uppercase' },
 
-  vendorStats: { flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 16 },
-  vendorStatItem: { alignItems: 'center' },
+  vendorStats: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 16, rowGap: 12 },
+  vendorStatItem: { alignItems: 'center', width: '24%' },
+  vendorStatItemNarrow: { width: '48%', alignItems: 'flex-start' },
   vStatLabel: { fontSize: 10, fontWeight: '900', color: '#64748b', textTransform: 'uppercase', marginBottom: 6 },
   vStatValue: { fontSize: 18, fontWeight: '900', color: '#FFF' },
 
-  reviewsSection: { padding: 20, backgroundColor: '#FFF' },
-  reviewsHeader: { fontSize: 16, fontWeight: '900', color: '#b45309', marginBottom: 20, textTransform: 'uppercase' },
-  ratingSummaryBox: { backgroundColor: '#FFFDF5', borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: '#FEF3C7', marginBottom: 24 },
-  bigRating: { fontSize: 48, fontWeight: '900', color: '#b45309', marginBottom: 4 },
+  reviewsSection: { padding: 16, backgroundColor: '#FFF' },
+  reviewsHeader: { fontSize: 16, fontWeight: '900', color: '#000', marginBottom: 20, textTransform: 'uppercase' },
+  ratingSummaryBox: { backgroundColor: '#f8fafc', borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: '#e2e8f0', marginBottom: 24 },
+  bigRating: { fontSize: 48, fontWeight: '900', color: '#000', marginBottom: 4 },
   starsRow: { flexDirection: 'row', gap: 4, marginBottom: 8 },
   ratingCountText: { fontSize: 13, color: '#64748b', marginBottom: 20 },
   distributionBox: { width: '100%', gap: 8 },
@@ -700,10 +740,10 @@ const styles = StyleSheet.create({
   reviewsList: { gap: 20 },
   reviewItem: { borderWidth: 1, borderColor: '#f1f5f9', borderRadius: 20, padding: 16 },
   reviewHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 12 },
-  reviewAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#fef3c7', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
+  reviewAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#f1f5f9', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
   reviewAvatarImg: { width: '100%', height: '100%' },
-  reviewAvatarTxt: { fontSize: 18, fontWeight: '900', color: '#b45309' },
-  reviewMeta: { flex: 1 },
+  reviewAvatarTxt: { fontSize: 18, fontWeight: '900', color: '#000' },
+  reviewMeta: { flex: 1, minWidth: 0 },
   reviewAuthor: { fontSize: 14, fontWeight: '700', color: '#1e293b' },
   hiddenBadge: { backgroundColor: '#fee2e2', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
   hiddenBadgeTxt: { fontSize: 9, color: '#ef4444', fontWeight: '900', textTransform: 'uppercase' },
@@ -711,7 +751,7 @@ const styles = StyleSheet.create({
   reviewDate: { fontSize: 11, color: '#94a3b8' },
   reviewVariant: { fontSize: 11, color: '#64748b', fontStyle: 'italic', marginTop: 4 },
   
-  reviewToggleBtn: { alignSelf: 'center' },
+  reviewToggleBtn: { alignSelf: 'flex-start', marginLeft: 8 },
   reviewToggleTxt: { fontSize: 11, fontWeight: '900', color: '#ef4444', textTransform: 'uppercase' },
 
   reviewComment: { fontSize: 14, color: '#334155', lineHeight: 22, marginBottom: 12 },
@@ -740,11 +780,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: '#F0F0F0',
     shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 10
   },
+  bottomBarNarrow: { gap: 8, paddingHorizontal: 12 },
   quantityControl: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f1f5f9', borderRadius: 16, padding: 4 },
+  quantityControlNarrow: { padding: 3, borderRadius: 14 },
   qtyBtn: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#FFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
   qtyText: { fontSize: 16, fontWeight: '900', color: '#1e293b', width: 32, textAlign: 'center' },
   
   addToCartBtnBottom: { width: 48, height: 48, borderRadius: 16, borderWidth: 2, borderColor: '#000', justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFF' },
+  addToCartBtnBottomNarrow: { width: 44, height: 44, borderRadius: 14 },
   buyNowBtn: { flex: 1, height: 48, borderRadius: 16, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
+  buyNowBtnNarrow: { height: 44, borderRadius: 14 },
   buyNowTxt: { color: '#FFF', fontSize: 15, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1 }
 });

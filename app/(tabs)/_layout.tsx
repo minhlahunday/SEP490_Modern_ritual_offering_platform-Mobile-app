@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Tabs, useRouter } from 'expo-router';
-import { View, Text, TouchableOpacity, StyleSheet, Image, Modal, TextInput, Linking, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image, Modal, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { Hop as Home, Compass, User, Bell, ShoppingCart, Wallet, RefreshCw, Plus, X } from 'lucide-react-native';
 import { getMyWallet, WalletInfo, createTopupLink } from '../../services/walletService';
 import { getCurrentUser } from '../../services/auth';
 import { cartService } from '../../services/cartService';
+import { fetchUnreadNotificationCount } from '../../services/notificationService';
 
 function HeaderRight() {
   const router = useRouter();
@@ -14,6 +15,7 @@ function HeaderRight() {
   const [topupAmount, setTopupAmount] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
   const user = getCurrentUser();
 
   const fetchWallet = async () => {
@@ -32,6 +34,26 @@ function HeaderRight() {
   useEffect(() => {
     fetchWallet();
     const interval = setInterval(fetchWallet, 60000); // 1 minute refresh
+    return () => clearInterval(interval);
+  }, [user?.email]);
+
+  useEffect(() => {
+    if (!user) {
+      setUnreadCount(0);
+      return;
+    }
+
+    const fetchUnread = async () => {
+      try {
+        const count = await fetchUnreadNotificationCount();
+        setUnreadCount(Math.max(0, Number(count || 0)));
+      } catch {
+        setUnreadCount(0);
+      }
+    };
+
+    fetchUnread();
+    const interval = setInterval(fetchUnread, 30000);
     return () => clearInterval(interval);
   }, [user?.email]);
 
@@ -56,18 +78,20 @@ function HeaderRight() {
       const result = await createTopupLink(amount, 'Customer');
       
       // PayOS implementation usually returns { checkoutUrl, ... } or { paymentUrl, ... }
-      const paymentUrl = result?.checkoutUrl || result?.paymentUrl;
+      const paymentUrl = result?.checkoutUrl || result?.paymentUrl || result?.payUrl || result?.url || result?.link;
       
       if (paymentUrl) {
         setShowTopupModal(false);
         setTopupAmount('');
-        // Open PayOS in system browser
-        const supported = await Linking.canOpenURL(paymentUrl);
-        if (supported) {
-          await Linking.openURL(paymentUrl);
-        } else {
-          Alert.alert('Lỗi', 'Không thể mở liên kết thanh toán');
-        }
+
+        const encoded = encodeURIComponent(String(paymentUrl));
+        router.push({
+          pathname: '/payment-webview',
+          params: {
+            url: encoded,
+            returnPath: '/(tabs)',
+          },
+        } as any);
       } else {
         throw new Error('Không lấy được link thanh toán');
       }
@@ -85,11 +109,13 @@ function HeaderRight() {
         <Text style={styles.phoneText}>1900 8888</Text>
 
         {/* Notification Bell */}
-        <TouchableOpacity style={styles.bellButton} onPress={() => {}}>
+        <TouchableOpacity style={styles.bellButton} onPress={() => router.push('/notifications' as any)}>
           <Bell size={20} color="#64748b" fill="#64748b" />
-          <View style={styles.notifBadge}>
-            <Text style={styles.notifBadgeText}>9+</Text>
-          </View>
+          {unreadCount > 0 && (
+            <View style={styles.notifBadge}>
+              <Text style={styles.notifBadgeText}>{unreadCount > 9 ? '9+' : String(unreadCount)}</Text>
+            </View>
+          )}
         </TouchableOpacity>
 
         {/* Wallet Icon Box */}
@@ -119,7 +145,7 @@ function HeaderRight() {
 
           <View style={styles.balanceRow}>
             <Text style={styles.balanceAmount}>
-              {wallet ? formatVND(wallet.balance) : '0'}
+              {wallet ? formatVND(Number(wallet.availableBalance ?? wallet.balance ?? 0)) : '0'}
             </Text>
             <Text style={styles.balanceUnit}>VND</Text>
           </View>
