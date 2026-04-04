@@ -1,5 +1,5 @@
 import { ApiResponse } from '../types';
-import { getAuthToken } from './auth';
+import { getAuthToken, getCurrentUser } from './auth';
 import { API_BASE_URL } from './api';
 
 export interface WalletTransaction {
@@ -38,6 +38,54 @@ export interface WalletInfo {
 }
 
 class WalletService {
+  private resolveActiveRole(type?: WalletType): 'Customer' | 'Vendor' | 'Admin' | 'Staff' {
+    if (type === 'Vendor') return 'Vendor';
+    if (type === 'Customer') return 'Customer';
+
+    const role = String(getCurrentUser()?.role || '').trim().toLowerCase();
+    if (role === 'vendor') return 'Vendor';
+    if (role === 'admin') return 'Admin';
+    if (role === 'staff') return 'Staff';
+    return 'Customer';
+  }
+
+  private toNumber(value: unknown, fallback = 0): number {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return fallback;
+  }
+
+  private normalizeWallet(raw: any, requestedType: WalletType): WalletInfo {
+    const source = raw && typeof raw === 'object' ? raw : {};
+
+    const balance = this.toNumber(
+      source.balance ?? source.Balance ?? source.currentBalance ?? source.CurrentBalance,
+      0,
+    );
+    const heldBalance = this.toNumber(source.heldBalance ?? source.HeldBalance, 0);
+    const debt = this.toNumber(source.debt ?? source.Debt, 0);
+    const availableBalanceRaw = source.availableBalance ?? source.AvailableBalance;
+    const availableBalance =
+      availableBalanceRaw !== undefined && availableBalanceRaw !== null
+        ? this.toNumber(availableBalanceRaw, 0)
+        : Math.max(0, balance - heldBalance - debt);
+
+    return {
+      id: String(source.id ?? source.walletId ?? source.WalletId ?? ''),
+      userId: String(source.userId ?? source.profileId ?? source.ProfileId ?? ''),
+      balance,
+      availableBalance,
+      heldBalance,
+      debt,
+      walletType: (source.walletType ?? source.type ?? requestedType) as WalletType,
+      isActive: Boolean(source.isActive ?? source.status === 'Active' ?? true),
+      ...source,
+    };
+  }
+
   private getHeaders(): HeadersInit {
     const token = getAuthToken();
     return {
@@ -49,10 +97,11 @@ class WalletService {
 
   async getMyWallet(type: WalletType = 'Customer'): Promise<WalletInfo | null> {
     try {
+      const activeRole = this.resolveActiveRole(type);
       const endpoints = [
-        `${API_BASE_URL}/api/wallets/me?type=${type}`,
-        `${API_BASE_URL}/api/wallets/my-wallet?type=${type}`,
-        `${API_BASE_URL}/api/wallets/me`,
+        `${API_BASE_URL}/wallets/me?ActiveRole=${encodeURIComponent(activeRole)}`,
+        `${API_BASE_URL}/wallets/me?type=${encodeURIComponent(type)}`,
+        `${API_BASE_URL}/wallets/my-wallet?type=${encodeURIComponent(type)}`,
         `${API_BASE_URL}/wallets/me`,
       ];
 
@@ -69,11 +118,17 @@ class WalletService {
         throw new Error(`HTTP error! status: ${response?.status || 'unknown'}`);
       }
 
-      const data: ApiResponse<WalletInfo> = await response.json();
-      if (data.isSuccess) {
-        return data.result;
+      const payload = await response.json().catch(() => null);
+
+      const isEnvelope = payload && typeof payload === 'object' && ('isSuccess' in payload || 'result' in payload);
+      if (isEnvelope) {
+        const env = payload as ApiResponse<any>;
+        if (env.isSuccess === false) return null;
+        const source = env.result ?? payload;
+        return this.normalizeWallet(source, type);
       }
-      return null;
+
+      return this.normalizeWallet(payload, type);
     } catch (error) {
       console.error('❌ Failed to fetch wallet info:', error);
       return null;
@@ -189,10 +244,10 @@ class WalletService {
   async createTopupLink(amount: number, walletType: WalletType = 'Customer'): Promise<any> {
     try {
       // Backend pattern for PayOS top-up from Web code
-      const response = await fetch(`${API_BASE_URL}/api/payos/create-payment-link`, {
+      const response = await fetch(`${API_BASE_URL}/payos/create-topup-link`, {
         method: 'POST',
         headers: this.getHeaders(),
-        body: JSON.stringify({ amount, walletType }),
+        body: JSON.stringify({ amount, type: walletType, walletType }),
       });
 
       if (!response.ok) {
@@ -201,7 +256,14 @@ class WalletService {
       }
 
       const data: ApiResponse<any> = await response.json();
-      return data.isSuccess ? data.result : null;
+      if (!data.isSuccess) return null;
+
+      const result = data.result || {};
+      return {
+        ...result,
+        checkoutUrl: result.checkoutUrl || result.paymentUrl || result.payUrl || result.url || result.link,
+        paymentUrl: result.paymentUrl || result.checkoutUrl || result.payUrl || result.url || result.link,
+      };
     } catch (error) {
       console.error('❌ Failed to create topup link:', error);
       throw error;
