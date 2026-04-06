@@ -3,13 +3,13 @@ import {
   ActivityIndicator,
   Dimensions,
   Image,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { ChevronLeft, MapPin, Star } from 'lucide-react-native';
 
@@ -18,6 +18,7 @@ import { bannerService, BannerResponse } from '../../services/bannerService';
 import { packageService } from '../../services/packageService';
 import { reviewService, Review } from '../../services/reviewService';
 import { vendorService, VendorProfile } from '../../services/vendorService';
+import { getCurrentUser } from '../../services/auth';
 import toast from '../../services/toast';
 
 const { width } = Dimensions.get('window');
@@ -42,7 +43,7 @@ const ProductTile: React.FC<{ product: Product; onPress: () => void }> = ({ prod
             <Star size={12} color="#f59e0b" fill="#f59e0b" />
             <Text style={styles.tileRatingText}>{Number(product.rating || 0).toFixed(1)}</Text>
           </View>
-          {!!product.totalSold && <Text style={styles.tileSold}>Da ban {product.totalSold}</Text>}
+          {!!product.totalSold && <Text style={styles.tileSold}>Đã bán {product.totalSold}</Text>}
         </View>
         <Text style={styles.tilePrice}>{Number(product.price || 0).toLocaleString('vi-VN')}d</Text>
       </View>
@@ -132,10 +133,6 @@ export default function VendorProfileScreen() {
     ? (reviews.reduce((acc, item) => acc + Number(item.rating || 0), 0) / vendorRatingCount).toFixed(1)
     : Number(vendor?.ratingAvg || 0).toFixed(1);
 
-  const joinTimeMonths = vendor?.createdAt
-    ? Math.max(0, Math.floor((Date.now() - new Date(vendor.createdAt).getTime()) / (1000 * 60 * 60 * 24 * 30)))
-    : 0;
-
   const shownProducts = useMemo(() => {
     if (activeFilter === 'All') return products;
     return products.filter((p) => p.category === activeFilter);
@@ -158,6 +155,23 @@ export default function VendorProfileScreen() {
     }
 
     router.push('/(tabs)/explore');
+  };
+
+  const handleStartChat = () => {
+    const user = getCurrentUser();
+    if (!user) {
+      toast.warning('Vui long dang nhap de nhan tin voi cua hang');
+      router.push('/login' as any);
+      return;
+    }
+
+    const vendorId = String(vendor?.profileId || id || '').trim();
+    if (!vendorId) {
+      toast.error('Khong tim thay thong tin cua hang');
+      return;
+    }
+
+    router.push({ pathname: '/messages', params: { vendorId } } as any);
   };
 
   if (loading) {
@@ -206,14 +220,11 @@ export default function VendorProfileScreen() {
               <Text style={styles.heroName} numberOfLines={2}>{vendor.shopName}</Text>
               <View style={styles.onlineRow}>
                 <View style={styles.onlineDot} />
-                <Text style={styles.onlineText}>Cua hang dang truc tuyen</Text>
+                <Text style={styles.onlineText}>Trực tuyến</Text>
               </View>
               <View style={styles.heroActions}>
-                <TouchableOpacity style={styles.followBtn} onPress={() => toast.info('Tinh nang theo doi se co som')}>
-                  <Text style={styles.followBtnText}>Theo doi</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.contactBtn} onPress={() => toast.info('Tinh nang lien he se co som')}>
-                  <Text style={styles.contactBtnText}>Lien he</Text>
+                <TouchableOpacity style={styles.chatBtn} onPress={handleStartChat}>
+                  <Text style={styles.chatBtnText}>Nhắn tin</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -221,29 +232,25 @@ export default function VendorProfileScreen() {
 
           <View style={styles.statsRow}>
             <View style={styles.statItem}>
-              <Text style={styles.statLabel}>San pham</Text>
+              <Text style={styles.statLabel}>Sản Phẩm</Text>
               <Text style={styles.statValue}>{products.length}</Text>
             </View>
             <View style={styles.statItem}>
-              <Text style={styles.statLabel}>Danh gia</Text>
+              <Text style={styles.statLabel}>Đánh giá</Text>
               <Text style={styles.statValue}>{vendorAvgRating} <Text style={styles.statSub}>({vendorRatingCount})</Text></Text>
             </View>
             <View style={styles.statItem}>
-              <Text style={styles.statLabel}>Tham gia</Text>
-              <Text style={styles.statValue}>{joinTimeMonths} <Text style={styles.statSub}>thang</Text></Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={styles.statLabel}>Hang shop</Text>
-              <Text style={styles.statValue}>{String(vendor.tierName || 'Bac').toUpperCase()}</Text>
+              <Text style={styles.statLabel}>Hạng shop</Text>
+              <Text style={styles.statValue}>{String(vendor.tierName || 'Bạc').toUpperCase()}</Text>
             </View>
           </View>
         </View>
 
         <View style={styles.tabsWrap}>
           {([
-            { key: 'home', label: 'Trang chu' },
-            { key: 'products', label: 'San pham' },
-            { key: 'about', label: 'Thong tin' },
+            { key: 'home', label: 'Trang chủ' },
+            { key: 'products', label: 'Sản phẩm' },
+            { key: 'about', label: 'Thông tin' },
           ] as Array<{ key: VendorTab; label: string }>).map((tab) => (
             <TouchableOpacity
               key={tab.key}
@@ -280,7 +287,7 @@ export default function VendorProfileScreen() {
             )}
 
             <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionHeader}>De xuat</Text>
+              <Text style={styles.sectionHeader}>Gợi ý cho bạn</Text>
             </View>
 
             <View style={styles.tilesGrid}>
@@ -302,7 +309,7 @@ export default function VendorProfileScreen() {
                 style={[styles.filterChip, activeFilter === 'All' && styles.filterChipActive]}
                 onPress={() => setActiveFilter('All')}
               >
-                <Text style={[styles.filterText, activeFilter === 'All' && styles.filterTextActive]}>Tat ca</Text>
+                <Text style={[styles.filterText, activeFilter === 'All' && styles.filterTextActive]}>Tất cả</Text>
               </TouchableOpacity>
 
               {categories
@@ -329,7 +336,7 @@ export default function VendorProfileScreen() {
             </View>
 
             {shownProducts.length === 0 && (
-              <Text style={styles.emptyHint}>Khong tim thay san pham phu hop</Text>
+              <Text style={styles.emptyHint}>Không tìm thấy sản phẩm phù hợp</Text>
             )}
           </View>
         )}
@@ -337,12 +344,12 @@ export default function VendorProfileScreen() {
         {activeTab === 'about' && (
           <View style={styles.block}>
             <View style={styles.aboutCard}>
-              <Text style={styles.aboutTitle}>Gioi thieu</Text>
-              <Text style={styles.aboutText}>{vendor.shopDescription || 'Cua hang chuyen cung cap cac dich vu tam linh truyen thong.'}</Text>
+              <Text style={styles.aboutTitle}>Giới thiệu</Text>
+              <Text style={styles.aboutText}>{vendor.shopDescription || 'ửa hàng chuyên cung cấp các dịch vụ tâm linh truyền thống.'}</Text>
             </View>
 
             <View style={styles.aboutCard}>
-              <Text style={styles.aboutTitle}>Vi tri</Text>
+              <Text style={styles.aboutTitle}>Vị trí</Text>
               <View style={styles.locationRow}>
                 <MapPin size={16} color="#334155" />
                 <Text style={styles.aboutText}>{vendor.shopAddressText || 'Viet Nam'}</Text>
@@ -350,14 +357,14 @@ export default function VendorProfileScreen() {
             </View>
 
             <View style={styles.aboutCard}>
-              <Text style={styles.aboutTitle}>Chi tiet</Text>
+              <Text style={styles.aboutTitle}>Chi tiết</Text>
               <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Loai hinh</Text>
-                <Text style={styles.detailValue}>{BUSINESS_TYPE_MAP[String(vendor.businessType || 'Individual')] || String(vendor.businessType || 'Ca nhan')}</Text>
+                <Text style={styles.detailLabel}>Loại hình</Text>
+                <Text style={styles.detailValue}>{BUSINESS_TYPE_MAP[String(vendor.businessType || 'Individual')] || String(vendor.businessType || 'Cá nhân')}</Text>
               </View>
               <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Hang</Text>
-                <Text style={styles.detailValue}>{String(vendor.tierName || 'Bac').toUpperCase()}</Text>
+                <Text style={styles.detailLabel}>Hạng</Text>
+                <Text style={styles.detailValue}>{String(vendor.tierName || 'ạc').toUpperCase()}</Text>
               </View>
             </View>
           </View>
@@ -419,10 +426,8 @@ const styles = StyleSheet.create({
   onlineDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#22c55e', marginRight: 6 },
   onlineText: { color: '#93c5fd', fontSize: 10, textTransform: 'uppercase', fontWeight: '700', letterSpacing: 0.8 },
   heroActions: { flexDirection: 'row', gap: 8, marginTop: 12 },
-  followBtn: { backgroundColor: '#fff', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
-  followBtnText: { color: '#0f172a', fontWeight: '800', fontSize: 11, textTransform: 'uppercase' },
-  contactBtn: { borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
-  contactBtnText: { color: '#fff', fontWeight: '800', fontSize: 11, textTransform: 'uppercase' },
+  chatBtn: { backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 9, borderRadius: 10 },
+  chatBtnText: { color: '#0f172a', fontWeight: '900', fontSize: 11, textTransform: 'uppercase' },
 
   statsRow: {
     marginTop: 16,

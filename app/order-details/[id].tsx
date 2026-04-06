@@ -8,10 +8,12 @@ import {
   ActivityIndicator, 
   Image, 
   Platform,
-  Alert
+  Alert,
+  Modal,
+  useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { 
   ChevronLeft, 
   MapPin, 
@@ -32,13 +34,18 @@ import {
 import { orderService, Order } from '../../services/orderService';
 import { refundService, RefundRecord } from '../../services/refundService';
 import { vendorService } from '../../services/vendorService';
+import { reviewService } from '../../services/reviewService';
+import { getCurrentUser } from '../../services/auth';
 import toast from '../../services/toast';
 import RefundModal from '../../components/RefundModal';
 import ReviewModal from '../../components/ReviewModal';
+import CancelOrderModal from '../../components/CancelOrderModal';
 
 export default function OrderDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
@@ -48,6 +55,78 @@ export default function OrderDetailsScreen() {
   const [selectedItemForReview, setSelectedItemForReview] = useState<{ itemId: string, packageName: string } | null>(null);
   const [refundInfo, setRefundInfo] = useState<RefundRecord | null>(null);
   const [escalating, setEscalating] = useState(false);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [showProofModal, setShowProofModal] = useState(false);
+  const [proofModalTitle, setProofModalTitle] = useState('');
+  const [proofModalImages, setProofModalImages] = useState<string[]>([]);
+  const [reviewedItemIds, setReviewedItemIds] = useState<Set<string>>(new Set());
+
+  const getReviewItemId = (item: any): string => {
+    return String(item?.reviewItemId || item?.itemId || '').trim();
+  };
+
+  const isItemReviewedFlag = (item: any): boolean => {
+    const raw = item?.isReviewed;
+    if (typeof raw === 'boolean') return raw;
+    if (typeof raw === 'number') return raw === 1;
+    if (typeof raw === 'string') {
+      const normalized = raw.trim().toLowerCase();
+      return normalized === 'true' || normalized === '1' || normalized === 'yes';
+    }
+    return false;
+  };
+
+  const loadReviewedItems = async (orderData: Order) => {
+    try {
+      const currentUser = getCurrentUser();
+      const currentUserId = String(currentUser?.userId || '').trim();
+
+      if (!currentUserId || !Array.isArray(orderData?.items) || orderData.items.length === 0) {
+        setReviewedItemIds(new Set());
+        return;
+      }
+
+      const orderItemIds = new Set(
+        orderData.items
+          .map((item: any) => getReviewItemId(item))
+          .filter((value) => value.length > 0)
+      );
+
+      if (orderItemIds.size === 0) {
+        setReviewedItemIds(new Set());
+        return;
+      }
+
+      const packageIds = Array.from(new Set(
+        orderData.items
+          .map((item: any) => Number(String(item?.packageId || '').trim()))
+          .filter((value) => Number.isInteger(value) && value > 0)
+      ));
+
+      if (packageIds.length === 0) {
+        setReviewedItemIds(new Set());
+        return;
+      }
+
+      const reviewGroups = await Promise.all(
+        packageIds.map((packageId) => reviewService.getReviewsByPackageId(packageId).catch(() => []))
+      );
+
+      const mine = new Set<string>();
+      reviewGroups.flat().forEach((review: any) => {
+        const reviewCustomerId = String(review?.customerId || '').trim();
+        const reviewItemId = String(review?.itemId || review?.orderItemId || '').trim();
+
+        if (reviewCustomerId === currentUserId && reviewItemId && orderItemIds.has(reviewItemId)) {
+          mine.add(reviewItemId);
+        }
+      });
+
+      setReviewedItemIds(mine);
+    } catch {
+      setReviewedItemIds(new Set());
+    }
+  };
 
   const fetchOrder = async () => {
     if (!id) return;
@@ -57,6 +136,7 @@ export default function OrderDetailsScreen() {
       if (data) {
         setOrder(data);
         await loadRefundInfo(data.orderId);
+        await loadReviewedItems(data);
       } else {
         toast.error('Không tìm thấy đơn hàng!');
         router.back();
@@ -82,34 +162,42 @@ export default function OrderDetailsScreen() {
     fetchOrder();
   }, [id]);
 
+  const handleOpenVendorShop = async () => {
+    if (!order) return;
+
+    const rawVendorId = String(
+      order.vendor?.profileId
+      || (order as any).vendorProfileId
+      || (order as any).vendorId
+      || ''
+    ).trim();
+
+    const resolvedProfileId = await vendorService.resolveVendorProfileId(rawVendorId, order.vendor?.shopName);
+
+    if (!resolvedProfileId) {
+      toast.error('Khong tim thay cua hang tu don hang nay');
+      return;
+    }
+
+    router.push(`/vendor/${resolvedProfileId}` as any);
+  };
+
   const handleCancelOrder = () => {
-    Alert.alert(
-      'Xác nhận hủy đơn',
-      'Bạn có chắc chắn muốn hủy đơn hàng này không?',
-      [
-        { text: 'Bỏ qua', style: 'cancel' },
-        { 
-          text: 'Đồng ý hủy', 
-          style: 'destructive',
-          onPress: async () => {
-            setCancelling(true);
-            try {
-              const success = await orderService.cancelOrder(id as string, 'Khách hàng yêu cầu hủy');
-              if (success) {
-                toast.success('Hủy đơn hàng thành công');
-                fetchOrder();
-              } else {
-                toast.error('Hủy đơn hàng thất bại');
-              }
-            } catch (error: any) {
-              toast.error(error.message || 'Lỗi khi hủy đơn');
-            } finally {
-              setCancelling(false);
-            }
-          }
-        }
-      ]
-    );
+    setShowCancelModal(true);
+  };
+
+  const handleConfirmCancelOrder = async (reason: string) => {
+    setCancelling(true);
+    try {
+      await orderService.cancelOrder(id as string, reason);
+      toast.success('Hủy đơn hàng thành công');
+      setShowCancelModal(false);
+      fetchOrder();
+    } catch (error: any) {
+      toast.error(error.message || 'Lỗi khi hủy đơn');
+    } finally {
+      setCancelling(false);
+    }
   };
 
   const handleCompleteOrder = () => {
@@ -185,11 +273,11 @@ export default function OrderDetailsScreen() {
     switch (status.toUpperCase()) {
       case 'PENDING': return '#f59e0b';
       case 'CONFIRMED': return '#0ea5e9';
-      case 'PAID': return '#10b981';
+      case 'PAID': return '#3b82f6';
       case 'PROCESSING': return '#8b5cf6';
       case 'DELIVERING': return '#6366f1';
       case 'DELIVERED': return '#22c55e';
-      case 'COMPLETED': return '#111827';
+      case 'COMPLETED': return '#16a34a';
       case 'CANCELLED': return '#ef4444';
       default: return '#6b7280';
     }
@@ -215,6 +303,99 @@ export default function OrderDetailsScreen() {
   // Map HouseIcon to Home or similar if needed, or use existing Lucide icons
   // Actually I see I didn't import Home, let's just use Package/CheckCircle etc.
 
+  const toNumber = (...values: any[]) => {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string' && value.trim() !== '') {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+    }
+    return 0;
+  };
+
+  const isRefundRelatedStatus = (rawStatus: any) => {
+    const s = String(rawStatus || '').toUpperCase().replace(/[\s_-]/g, '');
+    return [
+      'REFUNDED',
+      'REFUNDING',
+      'REFUNDPENDING',
+      'REFUNDREQUESTED',
+      'RETURNED',
+      'RETURNREQUESTED',
+      'PARTIALREFUNDED',
+    ].includes(s) || s.includes('REFUND') || s.includes('RETURN');
+  };
+
+  const isOrderItemRefunded = (item: any) => {
+    if (!item) return false;
+    if (isRefundRelatedStatus(item?.status)) return true;
+    if (isRefundRelatedStatus(item?.refundStatus)) return true;
+    if (isRefundRelatedStatus(item?.refund?.status)) return true;
+    if (item?.isRefunded === true || item?.isReturned === true) return true;
+    if (toNumber(item?.refundAmount) > 0) return true;
+    if (toNumber(item?.refundedAmount) > 0) return true;
+    if (toNumber(item?.refundedQuantity) > 0) return true;
+    return false;
+  };
+
+  const orderHasRefundSignal = (targetOrder: any) => {
+    if (!targetOrder) return false;
+    if (isRefundRelatedStatus(targetOrder?.orderStatus)) return true;
+    if (isRefundRelatedStatus(targetOrder?.refundStatus)) return true;
+    if (isRefundRelatedStatus(targetOrder?.refund?.status)) return true;
+    if (isRefundRelatedStatus(refundInfo?.status)) return true;
+    if (toNumber(targetOrder?.refundAmount) > 0) return true;
+    if (toNumber(targetOrder?.refundedAmount) > 0) return true;
+    const items = Array.isArray(targetOrder?.items) ? targetOrder.items : [];
+    return items.some((item: any) => isOrderItemRefunded(item) || item?.isRequestRefund === true);
+  };
+
+  const getItemTotal = (item: any) => {
+    const qty = toNumber(item?.quantity, 1) || 1;
+    const unit = toNumber(item?.price, item?.unitPrice, item?.variantPrice);
+    return toNumber(item?.lineTotal, item?.totalPrice, unit * qty);
+  };
+
+  const orderSubTotal = toNumber(
+    order?.pricing?.subTotal,
+    Array.isArray(order?.items) ? order.items.reduce((sum: number, item: any) => sum + getItemTotal(item), 0) : 0
+  );
+  const orderShippingFee = toNumber(order?.pricing?.shippingFee);
+  const orderDiscount = toNumber(order?.pricing?.discountAmount);
+  const orderTotal = toNumber(
+    order?.pricing?.finalAmount,
+    order?.pricing?.totalAmount,
+    orderSubTotal + orderShippingFee - orderDiscount
+  );
+  const orderLevelRefunded = orderHasRefundSignal(order);
+
+  const openProofImage = async (type: 'preparation' | 'delivery') => {
+    const latest = await orderService.getOrderDetails(id as string).catch(() => null);
+    const source = latest || order;
+
+    if (latest) {
+      setOrder(latest);
+    }
+
+    const preparationProofImages = Array.isArray(source?.delivery?.preparationProofImages)
+      ? source.delivery.preparationProofImages.filter((url) => typeof url === 'string' && url.trim().length > 0)
+      : [];
+    const deliveryProofImages = Array.isArray(source?.delivery?.deliveryProofImages)
+      ? source.delivery.deliveryProofImages.filter((url) => typeof url === 'string' && url.trim().length > 0)
+      : [];
+
+    const urls = type === 'preparation' ? preparationProofImages : deliveryProofImages;
+    if (!urls.length) {
+      toast.info(type === 'preparation' ? 'Chưa có ảnh chuẩn bị' : 'Chưa có ảnh giao hàng');
+      return;
+    }
+
+    setProofModalTitle(type === 'preparation' ? 'Ảnh chuẩn bị' : 'Ảnh giao hàng');
+    setProofModalImages(urls);
+    setShowProofModal(true);
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <Stack.Screen options={{ headerShown: false }} />
@@ -233,10 +414,32 @@ export default function OrderDetailsScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         
         {/* STATUS BANNER */}
-        <View style={[styles.statusBanner, { backgroundColor: getStatusColor(order.orderStatus) }]}>
-          <View>
+        <View style={[styles.statusBanner, { backgroundColor: getStatusColor(order.orderStatus) }]}> 
+          <View style={{ flex: 1 }}>
             <Text style={styles.statusLabel}>Trạng thái đơn hàng</Text>
             <Text style={styles.statusValue}>{getStatusText(order.orderStatus)}</Text>
+
+            {order.orderStatus.toUpperCase() === 'DELIVERED' && (
+              <View style={styles.statusActionsRow}>
+                <TouchableOpacity
+                  style={styles.statusGhostBtn}
+                  onPress={() => setIsRefundModalOpen(true)}
+                >
+                  <Text style={styles.statusGhostBtnText}>Yêu cầu hoàn tiền</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.statusPrimaryBtn}
+                  onPress={handleCompleteOrder}
+                  disabled={completing}
+                >
+                  {completing ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <Text style={styles.statusPrimaryBtnText}>Đã nhận hàng</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
           <View style={styles.statusIconContainer}>
             <Info size={24} color="#fff" />
@@ -276,6 +479,21 @@ export default function OrderDetailsScreen() {
               );
             })}
           </View>
+
+          <View style={styles.proofActionsRow}>
+            <TouchableOpacity
+              style={styles.proofBtn}
+              onPress={() => openProofImage('preparation')}
+            >
+              <Text style={styles.proofBtnText}>Ảnh chuẩn bị</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.proofBtn}
+              onPress={() => openProofImage('delivery')}
+            >
+              <Text style={styles.proofBtnText}>Ảnh giao hàng</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* VENDOR INFO */}
@@ -286,10 +504,14 @@ export default function OrderDetailsScreen() {
           </View>
           <TouchableOpacity 
             style={styles.vendorCard} 
-            onPress={() => router.push(`/vendor/${order.vendor.profileId}`)}
+            onPress={handleOpenVendorShop}
           >
             <Image 
-              source={{ uri: order.vendor.shopAvatarUrl || 'https://via.placeholder.com/100' }} 
+              source={{
+                uri:
+                  order.vendor.shopAvatarUrl
+                  || 'https://images.unsplash.com/photo-1545239351-1141bd82e8a6?auto=format&fit=crop&w=120&q=80'
+              }} 
               style={styles.vendorAvatar} 
             />
             <View style={styles.vendorInfo}>
@@ -306,29 +528,71 @@ export default function OrderDetailsScreen() {
             <Package size={18} color="#000" />
             <Text style={styles.sectionTitle}>Các gói lễ đã đặt</Text>
           </View>
-          {order.items.map((item, index) => (
-            <View key={index} style={[styles.itemRow, index === order.items.length - 1 && { borderBottomWidth: 0 }]}>
-              <Image source={{ uri: item.imageUrl || 'https://via.placeholder.com/150' }} style={styles.itemImage} />
+          {order.items.map((item, index) => {
+            const hasRefundBadge = isOrderItemRefunded(item) || orderLevelRefunded;
+
+            return (
+            <TouchableOpacity
+              key={index}
+              style={[styles.itemRow, index === order.items.length - 1 && { borderBottomWidth: 0 }]}
+              activeOpacity={0.85}
+              onPress={() => {
+                const packageId = String(item.packageId || '').trim();
+                if (!packageId) {
+                  toast.info('Không tìm thấy thông tin gói lễ');
+                  return;
+                }
+                router.push({ pathname: '/product/[id]', params: { id: packageId } } as any);
+              }}
+            >
+              <Image
+                source={{
+                  uri:
+                    item.imageUrl
+                    || 'https://images.unsplash.com/photo-1545239351-1141bd82e8a6?auto=format&fit=crop&w=200&q=80'
+                }}
+                style={styles.itemImage}
+              />
               <View style={styles.itemDetails}>
-                <Text style={styles.itemName} numberOfLines={1}>{item.packageName}</Text>
+                <Text style={styles.itemName} numberOfLines={2}>{item.packageName}</Text>
                 <Text style={styles.itemVariant}>Gói: {item.variantName}</Text>
                 <Text style={styles.itemQty}>Số lượng: {item.quantity}</Text>
-              </View>
-              <View style={styles.itemPriceCol}>
-                <Text style={styles.itemPrice}>{(item.price * item.quantity).toLocaleString('vi-VN')}đ</Text>
-                {order.orderStatus.toUpperCase() === 'COMPLETED' && (
-                  <TouchableOpacity 
-                    onPress={() => {
-                      setSelectedItemForReview({ itemId: item.itemId, packageName: item.packageName });
-                      setIsReviewModalOpen(true);
-                    }}
-                  >
-                    <Text style={styles.reviewBtnText}>Đánh giá</Text>
-                  </TouchableOpacity>
+                {hasRefundBadge && (
+                  <View style={styles.refundedItemBadge}>
+                    <Text style={styles.refundedItemBadgeText}>ĐÃ HOÀN TIỀN</Text>
+                  </View>
                 )}
               </View>
-            </View>
-          ))}
+              <View style={styles.itemPriceCol}>
+                <Text style={styles.itemPrice}>{getItemTotal(item).toLocaleString('vi-VN')}đ</Text>
+                {order.orderStatus.toUpperCase() === 'COMPLETED' && (
+                  (() => {
+                    const reviewItemId = getReviewItemId(item);
+                    const alreadyReviewed = reviewedItemIds.has(reviewItemId) || isItemReviewedFlag(item);
+
+                    if (alreadyReviewed) {
+                      return <Text style={styles.reviewedText}>Đã đánh giá</Text>;
+                    }
+
+                    return (
+                      <TouchableOpacity
+                        onPress={() => {
+                          if (!reviewItemId) {
+                            toast.error('Khong tim thay ItemId de danh gia');
+                            return;
+                          }
+                          setSelectedItemForReview({ itemId: reviewItemId, packageName: item.packageName });
+                          setIsReviewModalOpen(true);
+                        }}
+                      >
+                        <Text style={styles.reviewBtnText}>Đánh giá</Text>
+                      </TouchableOpacity>
+                    );
+                  })()
+                )}
+              </View>
+            </TouchableOpacity>
+          )})}
         </View>
 
         {/* DELIVERY INFO */}
@@ -359,21 +623,21 @@ export default function OrderDetailsScreen() {
           <Text style={styles.sectionTitleInner}>Tóm tắt thanh toán</Text>
           <View style={styles.paymentRow}>
             <Text style={styles.paymentLabel}>Tạm tính ({order.items.length} món)</Text>
-            <Text style={styles.paymentValue}>{order.pricing.subTotal.toLocaleString('vi-VN')}đ</Text>
+            <Text style={styles.paymentValue}>{orderSubTotal.toLocaleString('vi-VN')}đ</Text>
           </View>
           <View style={styles.paymentRow}>
             <Text style={styles.paymentLabel}>Phí giao hàng</Text>
-            <Text style={styles.paymentValue}>{order.pricing.shippingFee.toLocaleString('vi-VN')}đ</Text>
+            <Text style={styles.paymentValue}>{orderShippingFee.toLocaleString('vi-VN')}đ</Text>
           </View>
-          {order.pricing.discountAmount && order.pricing.discountAmount > 0 && (
+          {(orderDiscount > 0) && (
             <View style={styles.paymentRow}>
               <Text style={styles.paymentLabel}>Giảm giá</Text>
-              <Text style={[styles.paymentValue, { color: '#10b981' }]}>-{order.pricing.discountAmount.toLocaleString('vi-VN')}đ</Text>
+              <Text style={[styles.paymentValue, { color: '#10b981' }]}>-{orderDiscount.toLocaleString('vi-VN')}đ</Text>
             </View>
           )}
           <View style={[styles.paymentRow, styles.totalRow]}>
             <Text style={styles.totalLabel}>Tổng thanh toán</Text>
-            <Text style={styles.totalValue}>{(order.pricing.finalAmount || order.pricing.totalAmount).toLocaleString('vi-VN')}đ</Text>
+            <Text style={styles.totalValue}>{orderTotal.toLocaleString('vi-VN')}đ</Text>
           </View>
         </View>
 
@@ -387,24 +651,6 @@ export default function OrderDetailsScreen() {
             >
               {cancelling ? <ActivityIndicator color="#ef4444" size="small" /> : <Text style={styles.cancelOrderBtnText}>Hủy đơn hàng</Text>}
             </TouchableOpacity>
-          )}
-
-          {order.orderStatus.toUpperCase() === 'DELIVERED' && (
-            <View style={styles.deliveredActions}>
-              <TouchableOpacity 
-                style={styles.refundBtn}
-                onPress={() => setIsRefundModalOpen(true)}
-              >
-                <Text style={styles.refundBtnText}>Yêu cầu hoàn tiền</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.completeBtn}
-                onPress={handleCompleteOrder}
-                disabled={completing}
-              >
-                {completing ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.completeBtnText}>Đã nhận hàng</Text>}
-              </TouchableOpacity>
-            </View>
           )}
 
           {refundInfo && refundInfo.status === 'Rejected' && (
@@ -438,11 +684,79 @@ export default function OrderDetailsScreen() {
             setIsReviewModalOpen(false);
             setSelectedItemForReview(null);
           }}
-          onSuccess={fetchOrder}
+          onSuccess={async () => {
+            const reviewedId = String(selectedItemForReview?.itemId || '').trim();
+            if (reviewedId) {
+              setReviewedItemIds((prev) => {
+                const next = new Set(prev);
+                next.add(reviewedId);
+                return next;
+              });
+            }
+            await fetchOrder();
+          }}
           itemId={selectedItemForReview.itemId}
           packageName={selectedItemForReview.packageName}
         />
       )}
+
+      <CancelOrderModal
+        visible={showCancelModal}
+        loading={cancelling}
+        onClose={() => {
+          if (!cancelling) setShowCancelModal(false);
+        }}
+        onConfirm={handleConfirmCancelOrder}
+      />
+
+      <Modal
+        visible={showProofModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowProofModal(false)}
+      >
+        <View
+          style={[
+            styles.proofModalOverlay,
+            {
+              paddingTop: Math.max(insets.top, 12),
+              paddingBottom: Math.max(insets.bottom, 12),
+            },
+          ]}
+        >
+          <View style={styles.proofModalHeader}>
+            <Text style={styles.proofModalTitle}>{proofModalTitle}</Text>
+            <TouchableOpacity onPress={() => setShowProofModal(false)} style={styles.proofModalCloseBtn}>
+              <Text style={styles.proofModalCloseText}>Đóng</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.proofModalScroll}
+            style={{ width: screenWidth }}
+          >
+            {proofModalImages.map((url, index) => (
+              <View key={`${url}-${index}`} style={[styles.proofImageSlide, { width: screenWidth }]}>
+                <Image
+                  source={{ uri: url }}
+                  style={[
+                    styles.proofImage,
+                    {
+                      width: Math.max(screenWidth - 24, 220),
+                      height: Math.max(screenHeight * 0.72, 320),
+                    },
+                  ]}
+                  resizeMode="contain"
+                />
+                <Text style={styles.proofImageIndex}>{index + 1}/{proofModalImages.length}</Text>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -482,6 +796,30 @@ const styles = StyleSheet.create({
   statusLabel: { fontSize: 12, color: 'rgba(255,255,255,0.8)', fontWeight: '600' },
   statusValue: { fontSize: 24, fontWeight: '900', color: '#fff', marginTop: 4 },
   statusIconContainer: { width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
+  statusActionsRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  statusGhostBtn: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.7)',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  statusGhostBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+  statusPrimaryBtn: {
+    backgroundColor: '#111827',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    minWidth: 110,
+    alignItems: 'center',
+  },
+  statusPrimaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 12 },
+  reviewedText: {
+    color: '#16a34a',
+    fontWeight: '800',
+    fontSize: 13,
+  },
 
   section: { paddingHorizontal: 16, marginBottom: 24 },
   whiteSection: { backgroundColor: '#fff', padding: 20, marginHorizontal: 16, borderRadius: 24, marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 5, elevation: 2 },
@@ -497,6 +835,53 @@ const styles = StyleSheet.create({
   timelineLine: { position: 'absolute', top: 16, left: '50%', width: '100%', height: 2, zIndex: 1 },
   timelineLineActive: { backgroundColor: '#000' },
   timelineLineInactive: { backgroundColor: '#f3f4f6' },
+  proofActionsRow: { marginTop: 14, flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+  proofBtn: {
+    backgroundColor: '#000',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  proofBtnText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+  proofModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    justifyContent: 'flex-start',
+  },
+  proofModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  proofModalTitle: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  proofModalCloseBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.4)',
+    borderRadius: 10,
+  },
+  proofModalCloseText: { color: '#fff', fontWeight: '700' },
+  proofModalScroll: {
+    alignItems: 'center',
+  },
+  proofImageSlide: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  proofImage: {
+    borderRadius: 12,
+    backgroundColor: '#0f172a',
+  },
+  proofImageIndex: {
+    color: 'rgba(255,255,255,0.8)',
+    marginTop: 8,
+    fontSize: 12,
+    fontWeight: '600',
+  },
 
   sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16, borderBottomWidth: 1, borderBottomColor: '#f3f4f6', paddingBottom: 12 },
   sectionTitle: { fontSize: 14, fontWeight: '800', color: '#000', textTransform: 'uppercase', letterSpacing: 0.5 },
@@ -514,6 +899,21 @@ const styles = StyleSheet.create({
   itemName: { fontSize: 15, fontWeight: '700', color: '#111827' },
   itemVariant: { fontSize: 12, color: '#6b7280', marginTop: 4 },
   itemQty: { fontSize: 12, color: '#9ca3af', marginTop: 2 },
+  refundedItemBadge: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    backgroundColor: '#fff7ed',
+    borderWidth: 1,
+    borderColor: '#fed7aa',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  refundedItemBadgeText: {
+    color: '#ea580c',
+    fontSize: 10,
+    fontWeight: '800',
+  },
   itemPriceCol: { alignItems: 'flex-end', justifyContent: 'space-between' },
   itemPrice: { fontSize: 15, fontWeight: '800', color: '#000' },
   reviewBtnText: { fontSize: 12, fontWeight: 'bold', color: '#000', textDecorationLine: 'underline', marginTop: 8 },
@@ -536,12 +936,6 @@ const styles = StyleSheet.create({
   actionSection: { paddingHorizontal: 16, marginBottom: 40 },
   cancelOrderBtn: { paddingVertical: 16, borderRadius: 16, borderWidth: 1, borderColor: '#ef4444', alignItems: 'center' },
   cancelOrderBtnText: { color: '#ef4444', fontWeight: 'bold' },
-  
-  deliveredActions: { flexDirection: 'row', gap: 12 },
-  refundBtn: { flex: 1, paddingVertical: 16, borderRadius: 16, borderWidth: 1, borderColor: '#374151', alignItems: 'center' },
-  refundBtnText: { color: '#374151', fontWeight: 'bold' },
-  completeBtn: { flex: 1, paddingVertical: 16, borderRadius: 16, backgroundColor: '#000', alignItems: 'center' },
-  completeBtnText: { color: '#fff', fontWeight: 'bold' },
 
   refundNotice: { backgroundColor: '#fef2f2', padding: 16, borderRadius: 20, borderLeftWidth: 4, borderLeftColor: '#ef4444' },
   refundNoticeHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },

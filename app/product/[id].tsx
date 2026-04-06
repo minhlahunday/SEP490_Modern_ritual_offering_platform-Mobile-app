@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   View, Text, StyleSheet, ScrollView, TouchableOpacity, 
-  Image, ActivityIndicator, Dimensions, SafeAreaView,
+  Image, ActivityIndicator, Dimensions,
   TextInput, KeyboardAvoidingView, Platform
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Link, router, useRouter, useLocalSearchParams as useExpoParams } from 'expo-router';
 import { Star, ChevronLeft, Minus, Plus, ShoppingCart, Store, CheckCircle, MessageSquare, ShieldCheck, User } from 'lucide-react-native';
 
@@ -28,7 +29,7 @@ export default function ProductDetailPage() {
   const [vendorOverallReviews, setVendorOverallReviews] = useState<Review[]>([]);
   
   const [loading, setLoading] = useState(true);
-  const [selectedVariantIndex, setSelectedVariantIndex] = useState(0);
+  const [selectedVariantIndex, setSelectedVariantIndex] = useState<number | null>(null);
   const [currentMainImage, setCurrentMainImage] = useState(0);
   const [quantity, setQuantity] = useState(1);
   const [addingToCart, setAddingToCart] = useState(false);
@@ -201,7 +202,7 @@ export default function ProductDetailPage() {
   ])).filter(img => img);
 
   const selectedVariantMeta = Array.isArray(packageMeta?.packageVariants)
-    ? packageMeta.packageVariants[selectedVariantIndex]
+    ? (selectedVariantIndex !== null ? packageMeta.packageVariants[selectedVariantIndex] : null)
     : null;
   const variantImages = Array.from(new Set([
     String(selectedVariantMeta?.imageUrl || '').trim(),
@@ -214,9 +215,7 @@ export default function ProductDetailPage() {
 
   const selectedVariantDescription =
     selectedVariantMeta?.description ||
-    product?.variants?.[selectedVariantIndex]?.description ||
-    packageMeta?.description ||
-    product?.description ||
+    (selectedVariantIndex !== null ? product?.variants?.[selectedVariantIndex]?.description : '') ||
     '';
 
   useEffect(() => {
@@ -234,6 +233,11 @@ export default function ProductDetailPage() {
     if (!user) {
       toast.warning('Vui lòng đăng nhập để thêm vào giỏ hàng');
       router.push('/login');
+      return;
+    }
+
+    if (selectedVariantIndex === null) {
+      toast.error('Vui lòng chọn gói lễ vật trước');
       return;
     }
 
@@ -266,6 +270,11 @@ export default function ProductDetailPage() {
     if (!user) {
       toast.warning('Vui lòng đăng nhập để mua hàng');
       router.push('/login');
+      return;
+    }
+
+    if (selectedVariantIndex === null) {
+      toast.error('Vui lòng chọn gói lễ vật trước');
       return;
     }
 
@@ -304,6 +313,29 @@ export default function ProductDetailPage() {
       return;
     }
     router.push(`/vendor/${vendorId}` as any);
+  };
+
+  const handleStartChat = () => {
+    const user = getCurrentUser();
+    if (!user) {
+      toast.warning('Vui long dang nhap de nhan tin voi cua hang');
+      router.push('/login');
+      return;
+    }
+
+    const vendorId = String(vendor?.profileId || vendor?.vendorProfileId || '').trim();
+    if (!vendorId) {
+      toast.error('Khong tim thay thong tin cua hang');
+      return;
+    }
+
+    router.push({
+      pathname: '/messages',
+      params: {
+        vendorId,
+        packageId: String(id || ''),
+      },
+    } as any);
   };
 
   const formatPrice = (price: number) => {
@@ -377,7 +409,11 @@ export default function ProductDetailPage() {
             
             <View style={styles.priceRow}>
               <Text style={styles.priceText}>
-                {(product.variants && product.variants[selectedVariantIndex] ? product.variants[selectedVariantIndex].price : product.price).toLocaleString('vi-VN')} <Text style={{ textDecorationLine: 'underline' }}>đ</Text>
+                {(
+                  selectedVariantIndex !== null && product.variants && product.variants[selectedVariantIndex]
+                    ? product.variants[selectedVariantIndex].price
+                    : product.price
+                ).toLocaleString('vi-VN')} <Text style={{ textDecorationLine: 'underline' }}>đ</Text>
               </Text>
               {product.originalPrice && (
                 <Text style={styles.originalPriceText}>{product.originalPrice.toLocaleString('vi-VN')} <Text style={{ textDecorationLine: 'underline' }}>đ</Text></Text>
@@ -420,19 +456,23 @@ export default function ProductDetailPage() {
 
           {/* Description / Included Items */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>LỄ VẬT BAO GỒM</Text>
+            <Text style={[styles.sectionTitle, styles.includeSectionTitle]}>LỄ VẬT BAO GỒM</Text>
             {selectedVariantDescription ? (
               <View style={styles.descBox}>
-                <Text style={styles.descText}>"{selectedVariantDescription}"</Text>
+                <Text style={styles.descText}>{selectedVariantDescription}</Text>
               </View>
             ) : null}
             <View style={styles.itemsList}>
-              {product.variants?.[selectedVariantIndex]?.items?.map((item, idx) => (
-                <View key={idx} style={styles.listItem}>
-                  <CheckCircle size={14} color="#000" />
-                  <Text style={styles.listItemText}>{item}</Text>
-                </View>
-              ))}
+              {selectedVariantIndex === null ? (
+                <Text style={styles.variantHintText}>Vui lòng chọn gói lễ vật để xem vật phẩm bao gồm.</Text>
+              ) : (
+                product.variants?.[selectedVariantIndex]?.items?.map((item, idx) => (
+                  <View key={idx} style={styles.listItem}>
+                    <CheckCircle size={14} color="#000" />
+                    <Text style={styles.listItemText}>{item}</Text>
+                  </View>
+                ))
+              )}
             </View>
           </View>
 
@@ -451,15 +491,24 @@ export default function ProductDetailPage() {
                   <Text style={styles.vendorName} numberOfLines={1}>{vendor.shopName}</Text>
                   <View style={styles.vendorStatus}>
                     <View style={styles.statusDot} />
-                    <Text style={styles.statusText}>Cửa hàng đối tác</Text>
+                    <Text style={styles.statusText} numberOfLines={1}>Cửa hàng đối tác</Text>
                   </View>
                 </View>
-                <TouchableOpacity
-                  style={[styles.vendorViewBtn, isNarrowScreen && styles.vendorViewBtnNarrow]}
-                  onPress={handleViewShop}
-                >
-                  <Text style={styles.vendorViewBtnText}>Xem Shop</Text>
-                </TouchableOpacity>
+                <View style={styles.vendorActions}>
+                  <TouchableOpacity
+                    style={styles.vendorViewBtn}
+                    onPress={handleViewShop}
+                  >
+                    <Text style={styles.vendorViewBtnText}>Xem Shop</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.vendorChatBtn}
+                    onPress={handleStartChat}
+                  >
+                    <MessageSquare size={13} color="#fff" />
+                    <Text style={styles.vendorChatBtnText}>Nhắn tin</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
               
               <View style={styles.vendorStats}>
@@ -470,10 +519,6 @@ export default function ProductDetailPage() {
                 <View style={[styles.vendorStatItem, isNarrowScreen && styles.vendorStatItemNarrow]}>
                   <Text style={styles.vStatLabel}>Sản phẩm</Text>
                   <Text style={styles.vStatValue}>{vendorProducts.length || '24'}</Text>
-                </View>
-                <View style={[styles.vendorStatItem, isNarrowScreen && styles.vendorStatItemNarrow]}>
-                  <Text style={styles.vStatLabel}>Tham gia</Text>
-                  <Text style={styles.vStatValue}>12 <Text style={{fontSize:10, color:'#b45309'}}>Tháng</Text></Text>
                 </View>
                 <View style={[styles.vendorStatItem, isNarrowScreen && styles.vendorStatItemNarrow]}>
                   <Text style={styles.vStatLabel}>Hạng</Text>
@@ -544,7 +589,7 @@ export default function ProductDetailPage() {
                       </View>
 
                       {isOwnerVendor && (
-                        <TouchableOpacity style={styles.reviewToggleBtn} onPress={() => handleToggleVisibility(review.reviewId, !!review.isVisible)}>
+                        <TouchableOpacity style={styles.reviewToggleBtn} onPress={() => handleToggleVisibility(String(review.reviewId), !!review.isVisible)}>
                           <Text style={[styles.reviewToggleTxt, !review.isVisible && {color: '#10b981'}]}>
                             {review.isVisible ? 'Ẩn' : 'Hiện'}
                           </Text>
@@ -568,7 +613,7 @@ export default function ProductDetailPage() {
                         <Text style={styles.vendorReplyText}>"{review.vendorReply}"</Text>
                       </View>
                     ) : isOwnerVendor && vendorReplyingTo !== review.reviewId ? (
-                      <TouchableOpacity style={styles.replyBtn} onPress={() => setVendorReplyingTo(review.reviewId)}>
+                      <TouchableOpacity style={styles.replyBtn} onPress={() => setVendorReplyingTo(String(review.reviewId))}>
                         <MessageSquare size={12} color="#b45309" />
                         <Text style={styles.replyBtnTxt}>Phản hồi ngay</Text>
                       </TouchableOpacity>
@@ -587,7 +632,7 @@ export default function ProductDetailPage() {
                           <TouchableOpacity style={styles.replyCancelBtn} onPress={() => { setVendorReplyingTo(null); setVendorReplyText(''); }}>
                             <Text style={styles.replyCancelTxt}>Hủy</Text>
                           </TouchableOpacity>
-                          <TouchableOpacity style={styles.replySubmitBtn} onPress={() => handleVendorReply(review.reviewId)} disabled={isSubmittingReply}>
+                          <TouchableOpacity style={styles.replySubmitBtn} onPress={() => handleVendorReply(String(review.reviewId))} disabled={isSubmittingReply}>
                             <Text style={styles.replySubmitTxt}>Gửi</Text>
                           </TouchableOpacity>
                         </View>
@@ -616,17 +661,17 @@ export default function ProductDetailPage() {
         </View>
 
         <TouchableOpacity 
-          style={[styles.addToCartBtnBottom, isNarrowScreen && styles.addToCartBtnBottomNarrow]} 
+          style={[styles.addToCartBtnBottom, isNarrowScreen && styles.addToCartBtnBottomNarrow, selectedVariantIndex === null && styles.bottomActionDisabled]} 
           onPress={handleAddToCart}
-          disabled={addingToCart}
+          disabled={addingToCart || selectedVariantIndex === null}
         >
           <ShoppingCart size={20} color="#000" />
         </TouchableOpacity>
 
         <TouchableOpacity 
-          style={[styles.buyNowBtn, isNarrowScreen && styles.buyNowBtnNarrow]} 
+          style={[styles.buyNowBtn, isNarrowScreen && styles.buyNowBtnNarrow, selectedVariantIndex === null && styles.bottomActionDisabled]} 
           onPress={handleBuyNow}
-          disabled={buyingNow}
+          disabled={buyingNow || selectedVariantIndex === null}
         >
           <Text style={styles.buyNowTxt}>Mua Ngay</Text>
         </TouchableOpacity>
@@ -683,6 +728,7 @@ const styles = StyleSheet.create({
 
   section: { padding: 16, backgroundColor: '#FFF', marginBottom: 12 },
   sectionTitle: { fontSize: 12, fontWeight: '900', color: '#94a3b8', letterSpacing: 1, marginBottom: 16 },
+  includeSectionTitle: { fontSize: 13, color: '#64748b', marginBottom: 12 },
   variantsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   variantCard: { 
     padding: 12, borderRadius: 16, borderWidth: 2, borderColor: '#f1f5f9',
@@ -693,29 +739,41 @@ const styles = StyleSheet.create({
   variantTierActive: { color: '#000' },
   variantPrice: { fontSize: 12, fontWeight: '600', color: '#64748b' },
 
-  descBox: { backgroundColor: '#f8fafc', padding: 16, borderRadius: 16, marginBottom: 16 },
-  descText: { fontSize: 13, color: '#475569', fontStyle: 'italic', lineHeight: 20 },
+  descBox: { backgroundColor: '#f8fafc', padding: 16, borderRadius: 16, marginBottom: 16, borderWidth: 1, borderColor: '#e2e8f0' },
+  descText: { fontSize: 16, color: '#0f172a', fontWeight: '700', lineHeight: 24 },
   itemsList: { gap: 10 },
+  variantHintText: { fontSize: 14, color: '#64748b', fontWeight: '600' },
   listItem: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  listItemText: { fontSize: 14, fontWeight: '500', color: '#334155', flex: 1 },
+  listItemText: { fontSize: 16, fontWeight: '700', color: '#1e293b', flex: 1, lineHeight: 23 },
 
   vendorContainer: { backgroundColor: '#1e293b', margin: 16, borderRadius: 24, padding: 20 },
-  vendorHeader: { flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 20 },
-  vendorHeaderNarrow: { flexWrap: 'wrap', gap: 12 },
+  vendorHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 20 },
+  vendorHeaderNarrow: { alignItems: 'flex-start' },
   vendorAvatarWrapper: { 
     width: 64, height: 64, borderRadius: 20, backgroundColor: '#FFF', 
     justifyContent: 'center', alignItems: 'center', overflow: 'hidden'
   },
   vendorAvatar: { width: '100%', height: '100%' },
   vendorAvatarText: { fontSize: 28, fontWeight: '900', color: '#1e293b' },
-  vendorInfo: { flex: 1 },
+  vendorInfo: { flex: 1, minWidth: 0, paddingRight: 4 },
   vendorName: { fontSize: 18, fontWeight: '900', color: '#FFF', marginBottom: 4 },
   vendorStatus: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#10b981' },
-  statusText: { fontSize: 11, fontWeight: '700', color: '#94a3b8', letterSpacing: 1, textTransform: 'uppercase' },
-  vendorViewBtn: { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 10 },
-  vendorViewBtnNarrow: { marginLeft: 80 },
+  statusText: { fontSize: 11, fontWeight: '700', color: '#94a3b8', letterSpacing: 0.5, textTransform: 'uppercase', flexShrink: 1 },
+  vendorActions: { width: 108, gap: 8 },
+  vendorViewBtn: { paddingHorizontal: 10, paddingVertical: 8, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 10, alignItems: 'center' },
   vendorViewBtnText: { color: '#FFF', fontSize: 11, fontWeight: '900', textTransform: 'uppercase' },
+  vendorChatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    backgroundColor: '#0f172a',
+    borderRadius: 10,
+  },
+  vendorChatBtnText: { color: '#fff', fontSize: 11, fontWeight: '900', textTransform: 'uppercase' },
 
   vendorStats: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 16, rowGap: 12 },
   vendorStatItem: { alignItems: 'center', width: '24%' },
@@ -787,6 +845,7 @@ const styles = StyleSheet.create({
   qtyText: { fontSize: 16, fontWeight: '900', color: '#1e293b', width: 32, textAlign: 'center' },
   
   addToCartBtnBottom: { width: 48, height: 48, borderRadius: 16, borderWidth: 2, borderColor: '#000', justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFF' },
+  bottomActionDisabled: { opacity: 0.45 },
   addToCartBtnBottomNarrow: { width: 44, height: 44, borderRadius: 14 },
   buyNowBtn: { flex: 1, height: 48, borderRadius: 16, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
   buyNowBtnNarrow: { height: 44, borderRadius: 14 },
