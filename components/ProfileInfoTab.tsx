@@ -1,22 +1,26 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Alert, Modal, SafeAreaView, ScrollView } from 'react-native';
-import { UserProfile, updateProfile, changePassword, logout } from '../services/auth';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Alert, Modal } from 'react-native';
+import { UserProfile, updateProfile, changePassword, logout, getAuthToken } from '../services/auth';
 import { useRouter } from 'expo-router';
 import { Camera, MapPin, Map, CheckCircle2, ChevronDown, User as UserIcon, X, Calendar as CalendarIcon, Phone, History, Lock } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import toast from '../services/toast';
 import { getProvinces, getDistrictsByProvince, getWardsByDistrict, Province, District, Ward } from '../services/vietnamAddressApi';
+import { geocodingService, AddressSuggestion } from '../services/geocodingService';
+import { API_BASE_URL } from '../services/api';
 import SelectModal from './SelectModal';
+import AddressMapPicker from './AddressMapPicker';
 
 interface ProfileInfoTabProps {
   profile: UserProfile | null;
   isEditing: boolean;
   setIsEditing: (val: boolean) => void;
+  requiredSetup?: boolean;
   onReload: () => Promise<void>;
 }
 
-export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onReload }: ProfileInfoTabProps) {
+export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requiredSetup = false, onReload }: ProfileInfoTabProps) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
@@ -26,7 +30,14 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
     fullName: profile?.fullName || '',
     gender: profile?.gender || 'None',
     phoneNumber: profile?.phoneNumber || '',
-    dateOfBirth: profile?.dateOfBirth ? profile.dateOfBirth.split('T')[0] : '',
+    dateOfBirth: profile?.dateOfBirth
+      ? (() => {
+          const raw = profile.dateOfBirth.split('T')[0];
+          const parts = raw.split('-');
+          if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+          return raw;
+        })()
+      : '',
     addressText: profile?.addressText || '',
     latitude: profile?.latitude || 0,
     longitude: profile?.longitude || 0,
@@ -40,11 +51,186 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
   const [selectedDistrict, setSelectedDistrict] = useState<number | null>(null);
   const [selectedWard, setSelectedWard] = useState<number | null>(null);
   const [detailedAddress, setDetailedAddress] = useState('');
+  const [addressSuggestions, setAddressSuggestions] = useState<AddressSuggestion[]>([]);
+  const [loadingAddressSuggestions, setLoadingAddressSuggestions] = useState(false);
+  const [mapConfirmLoading, setMapConfirmLoading] = useState(false);
+
+  const [customerAddresses, setCustomerAddresses] = useState<CustomerAddress[]>([]);
+  const [selectedExistingAddressId, setSelectedExistingAddressId] = useState<string | number | null>(null);
 
   // Password Modal
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [pwdForm, setPwdForm] = useState({ oldPassword: '', newPassword: '', confirmPassword: '' });
   const [pwdLoading, setPwdLoading] = useState(false);
+
+  interface CustomerAddress {
+    addressId?: string | number;
+    addressText?: string;
+    fullAddress?: string;
+    latitude?: number;
+    longitude?: number;
+    isDefault?: boolean;
+  }
+
+  const isSameAddressId = (
+    left: string | number | null | undefined,
+    right: string | number | null | undefined
+  ): boolean => {
+    if (left === null || left === undefined || right === null || right === undefined) {
+      return false;
+    }
+    return String(left) === String(right);
+  };
+
+  const normalizeAddressText = (value?: string | null): string => {
+    if (!value) return '';
+    return value
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\b(tinh|thanh pho|quan|huyen|phuong|xa|thi tran|thi xa|tp\.?|q\.?|p\.?)\b/g, ' ')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  const isNameMatch = (left?: string, right?: string): boolean => {
+    const leftNorm = normalizeAddressText(left);
+    const rightNorm = normalizeAddressText(right);
+    if (!leftNorm || !rightNorm) return false;
+    return leftNorm.includes(rightNorm) || rightNorm.includes(leftNorm);
+  };
+
+  const normalizeVietnamPhoneNumber = (value: string): string => {
+    return String(value || '').replace(/\D/g, '');
+  };
+
+  const isValidVietnamPhoneNumber = (value: string): boolean => {
+    const normalized = normalizeVietnamPhoneNumber(value);
+    return /^\d{9,11}$/.test(normalized);
+  };
+
+  const fetchCustomerAddresses = async (): Promise<CustomerAddress[]> => {
+    try {
+      const token = getAuthToken();
+      if (!token) return [];
+
+      const response = await fetch(`${API_BASE_URL}/addresses`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        }
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) return [];
+        throw new Error(`Failed to fetch addresses: ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (Array.isArray(data)) return data as CustomerAddress[];
+      if (data?.isSuccess && Array.isArray(data.result)) return data.result as CustomerAddress[];
+
+      return [];
+    } catch (error) {
+      console.error('Failed to fetch addresses:', error);
+      return [];
+    }
+  };
+
+  const createCustomerAddress = async (payload: {
+    addressText: string;
+    latitude: number;
+    longitude: number;
+    isDefault: boolean;
+  }): Promise<CustomerAddress | null> => {
+    try {
+      const token = getAuthToken();
+      if (!token) return null;
+
+      const response = await fetch(`${API_BASE_URL}/addresses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(text || `Failed to create address: ${response.status}`);
+      }
+
+      const data = await response.json().catch(() => null);
+      if (data && typeof data === 'object' && (data.addressId || data.addressText || data.fullAddress)) {
+        return data as CustomerAddress;
+      }
+      if (data?.isSuccess && data.result) {
+        return data.result as CustomerAddress;
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Failed to create address:', error);
+      return null;
+    }
+  };
+
+  const deleteCustomerAddress = async (addressId: string | number): Promise<boolean> => {
+    try {
+      const token = getAuthToken();
+      if (!token) return false;
+
+      const response = await fetch(`${API_BASE_URL}/addresses/${addressId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        }
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(text || `Failed to delete address: ${response.status}`);
+      }
+
+      return true;
+    } catch (error) {
+      console.error('Failed to delete address:', error);
+      return false;
+    }
+  };
+
+  const setDefaultCustomerAddress = async (addressId: string | number): Promise<boolean> => {
+    try {
+      const token = getAuthToken();
+      if (!token) return false;
+
+      const response = await fetch(`${API_BASE_URL}/addresses/${addressId}/set-default`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        }
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(text || `Failed to set default address: ${response.status}`);
+      }
+
+      return true;
+    } catch (error) {
+      console.error('Failed to set default address:', error);
+      return false;
+    }
+  };
 
   useEffect(() => {
     // Only fetch address data if editing and user needs to input
@@ -52,6 +238,40 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
       getProvinces().then(setProvinces).catch(console.error);
     }
   }, [isEditing]);
+
+  useEffect(() => {
+    const loadAddresses = async () => {
+      const data = await fetchCustomerAddresses();
+      setCustomerAddresses(data);
+
+      if (!isEditing) {
+        return;
+      }
+
+      const defaultAddress = data.find((item) => item.isDefault) || data[0];
+      if (defaultAddress) {
+        const selectedId = defaultAddress.addressId ?? null;
+        const selectedAddressText = defaultAddress.addressText || defaultAddress.fullAddress || '';
+        setSelectedExistingAddressId(selectedId);
+        setDetailedAddress(selectedAddressText);
+        setForm((prev) => ({
+          ...prev,
+          addressText: selectedAddressText,
+          latitude: typeof defaultAddress.latitude === 'number' ? defaultAddress.latitude : prev.latitude,
+          longitude: typeof defaultAddress.longitude === 'number' ? defaultAddress.longitude : prev.longitude,
+        }));
+      }
+    };
+
+    loadAddresses();
+  }, [isEditing, profile?.profileId, profile?.updatedAt]);
+
+  const defaultSavedAddress = customerAddresses.find((item) => item.isDefault) || customerAddresses[0];
+  const resolvedProfileAddress =
+    profile?.addressText?.trim() ||
+    defaultSavedAddress?.addressText ||
+    defaultSavedAddress?.fullAddress ||
+    '';
 
   useEffect(() => {
     if (selectedProvince) {
@@ -77,6 +297,85 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
       setForm(prev => ({ ...prev, addressText: combined }));
     }
   }, [selectedProvince, selectedDistrict, selectedWard, detailedAddress, provinces, districts, wards]);
+
+  useEffect(() => {
+    if (!isEditing || selectedExistingAddressId !== null) {
+      setAddressSuggestions([]);
+      setLoadingAddressSuggestions(false);
+      return;
+    }
+
+    const keyword = detailedAddress.trim();
+    if (keyword.length < 3) {
+      setAddressSuggestions([]);
+      setLoadingAddressSuggestions(false);
+      return;
+    }
+
+    const districtName = districts.find((d) => d.code === selectedDistrict)?.name;
+    const provinceName = provinces.find((p) => p.code === selectedProvince)?.name;
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        setLoadingAddressSuggestions(true);
+        const suggestions = await geocodingService.suggestAddresses(keyword, districtName, provinceName);
+        if (!cancelled) {
+          setAddressSuggestions(suggestions);
+        }
+      } catch {
+        if (!cancelled) {
+          setAddressSuggestions([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingAddressSuggestions(false);
+        }
+      }
+    }, 400);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isEditing, selectedExistingAddressId, detailedAddress, selectedDistrict, selectedProvince, districts, provinces]);
+
+  useEffect(() => {
+    if (!isEditing || selectedExistingAddressId !== null) return;
+
+    const provinceName = provinces.find((p) => p.code === selectedProvince)?.name;
+    const districtName = districts.find((d) => d.code === selectedDistrict)?.name;
+    const wardName = wards.find((w) => w.code === selectedWard)?.name;
+    const hasEnoughAddress = !!detailedAddress.trim() && !!provinceName && !!districtName;
+    if (!hasEnoughAddress) return;
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await geocodingService.geocodeAddressComponents({
+          detailedAddress: detailedAddress.trim(),
+          wardName,
+          districtName,
+          provinceName,
+        });
+
+        if (!cancelled && result) {
+          setForm((prev) => ({
+            ...prev,
+            latitude: result.latitude,
+            longitude: result.longitude,
+          }));
+        }
+      } catch {
+        // Keep current coordinates if geocoding fails.
+      }
+    }, 650);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isEditing, selectedExistingAddressId, selectedProvince, selectedDistrict, selectedWard, detailedAddress, provinces, districts, wards]);
 
   const handlePickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -113,8 +412,14 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
       }));
       toast.success('Đã lấy vị trí hiện tại thành công');
     } catch (err) {
-      console.error(err);
-      toast.error('Lỗi khi lấy vị trí hiện tại');
+      const message = err instanceof Error ? err.message : '';
+      const isUnavailable = /Current location is unavailable|LOCATION_UNAVAILABLE|E_LOCATION_UNAVAILABLE/i.test(message);
+      console.warn('Get current location failed:', message || err);
+      toast.error(
+        isUnavailable
+          ? 'Không lấy được vị trí hiện tại. Hãy bật GPS hoặc chọn trực tiếp trên bản đồ.'
+          : 'Lỗi khi lấy vị trí hiện tại.'
+      );
     } finally {
       setLoading(false);
     }
@@ -123,9 +428,26 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
   const parseDateForAPI = (dateString: string) => {
     if (!dateString) return '';
     try {
+      const dmy = dateString.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+      if (dmy) {
+        const day = Number(dmy[1]);
+        const month = Number(dmy[2]);
+        const year = Number(dmy[3]);
+        const yyyy = String(year).padStart(4, '0');
+        const mm = String(month).padStart(2, '0');
+        const dd = String(day).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+      }
+
       const parts = dateString.split('-');
       if (parts.length === 3 && parts[0].length === 4) {
-        return new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))).toISOString();
+        const year = Number(parts[0]);
+        const month = Number(parts[1]);
+        const day = Number(parts[2]);
+        const yyyy = String(year).padStart(4, '0');
+        const mm = String(month).padStart(2, '0');
+        const dd = String(day).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
       }
       return dateString;
     } catch {
@@ -135,12 +457,34 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
 
   const validateForm = () => {
     if (!form.fullName.trim()) return 'Họ tên không được để trống';
-    if (!form.phoneNumber.trim() || !/^\d{10,11}$/.test(form.phoneNumber)) return 'Số điện thoại không hợp lệ';
-    if (!form.dateOfBirth.trim()) return 'Ngày sinh không được để trống (YYYY-MM-DD)';
-    const dobRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dobRegex.test(form.dateOfBirth)) return 'Ngày sinh phải theo định dạng YYYY-MM-DD';
+    if (!form.phoneNumber.trim() || !isValidVietnamPhoneNumber(form.phoneNumber)) {
+      return 'Số điện thoại không hợp lệ';
+    }
+    if (!form.dateOfBirth.trim()) return 'Ngày sinh không được để trống (DD/MM/YYYY)';
+    const dobRegex = /^\d{2}\/\d{2}\/\d{4}$/;
+    if (!dobRegex.test(form.dateOfBirth)) return 'Ngày sinh phải theo định dạng DD/MM/YYYY';
+
+    const [dayRaw, monthRaw, yearRaw] = form.dateOfBirth.split('/');
+    const day = Number(dayRaw);
+    const month = Number(monthRaw);
+    const year = Number(yearRaw);
+    const dobDate = new Date(year, month - 1, day);
+    if (
+      !Number.isFinite(day) ||
+      !Number.isFinite(month) ||
+      !Number.isFinite(year) ||
+      dobDate.getFullYear() !== year ||
+      dobDate.getMonth() !== month - 1 ||
+      dobDate.getDate() !== day
+    ) {
+      return 'Ngày sinh không hợp lệ';
+    }
+
+    const today = new Date();
+    if (dobDate > today) return 'Ngày sinh không được lớn hơn ngày hiện tại';
+
     if (!form.addressText.trim()) return 'Địa chỉ không được để trống';
-    if (form.latitude === 0 || form.longitude === 0) return 'Vị trí bản đồ chưa được cập nhật. Vui lòng lấy vị trí hiện tại.';
+    if (form.latitude === 0 || form.longitude === 0) return 'Vị trí bản đồ chưa được cập nhật. Vui lòng chọn địa chỉ cụ thể hoặc dùng vị trí hiện tại.';
     return null;
   };
 
@@ -154,10 +498,34 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
     try {
       setLoading(true);
 
+      if (selectedExistingAddressId === null && selectedProvince && selectedDistrict) {
+        const selectedProvinceName = provinces.find((p) => p.code === selectedProvince)?.name;
+        const selectedDistrictName = districts.find((d) => d.code === selectedDistrict)?.name;
+        const selectedWardName = wards.find((w) => w.code === selectedWard)?.name;
+
+        if (selectedProvinceName && selectedDistrictName && detailedAddress.trim()) {
+          try {
+            const geoResult = await geocodingService.geocodeAddressComponents({
+              detailedAddress: detailedAddress.trim(),
+              wardName: selectedWardName,
+              districtName: selectedDistrictName,
+              provinceName: selectedProvinceName,
+            });
+
+            if (geoResult) {
+              form.latitude = geoResult.latitude;
+              form.longitude = geoResult.longitude;
+            }
+          } catch {
+            // Continue with manually selected current coordinates.
+          }
+        }
+      }
+
       const requestPayload: any = {
         fullName: form.fullName,
         gender: form.gender,
-        phoneNumber: form.phoneNumber,
+        phoneNumber: normalizeVietnamPhoneNumber(form.phoneNumber),
         dateOfBirth: parseDateForAPI(form.dateOfBirth),
         addressText: form.addressText,
         latitude: form.latitude,
@@ -172,15 +540,263 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
         };
       }
 
+      const normalizedAddress = (requestPayload.addressText || '').trim().toLowerCase();
+      const selectedAddress = selectedExistingAddressId !== null
+        ? customerAddresses.find((item) => isSameAddressId(item.addressId, selectedExistingAddressId))
+        : undefined;
+      const matchedAddress = customerAddresses.find((item) => {
+        const text = (item.addressText || item.fullAddress || '').trim().toLowerCase();
+        return normalizedAddress && text === normalizedAddress;
+      });
+
+      if (selectedAddress?.addressId !== undefined && selectedAddress?.addressId !== null) {
+        if (!selectedAddress.isDefault) {
+          await setDefaultCustomerAddress(selectedAddress.addressId);
+        }
+      } else if (matchedAddress?.addressId !== undefined && matchedAddress?.addressId !== null) {
+        if (!matchedAddress.isDefault) {
+          await setDefaultCustomerAddress(matchedAddress.addressId);
+        }
+      } else if (normalizedAddress) {
+        const created = await createCustomerAddress({
+          addressText: requestPayload.addressText,
+          latitude: requestPayload.latitude,
+          longitude: requestPayload.longitude,
+          isDefault: customerAddresses.length === 0,
+        });
+
+        if (created?.addressId !== undefined && created?.addressId !== null && customerAddresses.length > 0) {
+          await setDefaultCustomerAddress(created.addressId);
+        }
+      }
+
       await updateProfile(requestPayload);
       toast.success('Cập nhật thông tin thành công!');
       setIsEditing(false);
       await onReload();
+
+      const refreshedAddresses = await fetchCustomerAddresses();
+      setCustomerAddresses(refreshedAddresses);
     } catch (err: any) {
       toast.error(err.message || 'Lỗi khi cập nhật profile');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handlePickAddressSuggestion = async (suggestion: AddressSuggestion) => {
+    setSelectedExistingAddressId(null);
+    setAddressSuggestions([]);
+
+    let resolvedDetailedAddress = suggestion.displayName.split(',')[0]?.trim() || suggestion.displayName;
+    let composedAddress = suggestion.displayName;
+
+    try {
+      const reverseData = await geocodingService.reverseGeocodeDetails(suggestion.latitude, suggestion.longitude);
+
+      if (reverseData) {
+        const matchedProvince = provinces.find((province) => (
+          isNameMatch(reverseData.provinceName, province.name) ||
+          isNameMatch(reverseData.provinceName, province.full_name) ||
+          isNameMatch(reverseData.formattedAddress, province.name) ||
+          isNameMatch(reverseData.formattedAddress, province.full_name)
+        ));
+
+        let matchedDistrict: District | undefined;
+        let matchedWard: Ward | undefined;
+
+        if (matchedProvince) {
+          setSelectedProvince(matchedProvince.code);
+          const provinceDistricts = await getDistrictsByProvince(matchedProvince.code);
+          setDistricts(provinceDistricts);
+
+          matchedDistrict = provinceDistricts.find((district) => (
+            isNameMatch(reverseData.districtName, district.name) ||
+            isNameMatch(reverseData.districtName, district.full_name) ||
+            isNameMatch(reverseData.formattedAddress, district.name) ||
+            isNameMatch(reverseData.formattedAddress, district.full_name)
+          ));
+
+          if (matchedDistrict) {
+            setSelectedDistrict(matchedDistrict.code);
+            const districtWards = await getWardsByDistrict(matchedDistrict.code);
+            setWards(districtWards);
+
+            matchedWard = districtWards.find((ward) => (
+              isNameMatch(reverseData.wardName, ward.name) ||
+              isNameMatch(reverseData.wardName, ward.full_name) ||
+              isNameMatch(reverseData.formattedAddress, ward.name) ||
+              isNameMatch(reverseData.formattedAddress, ward.full_name)
+            ));
+
+            if (matchedWard) {
+              setSelectedWard(matchedWard.code);
+            }
+          }
+        }
+
+        resolvedDetailedAddress =
+          reverseData.detailedAddress ||
+          reverseData.formattedAddress.split(',')[0]?.trim() ||
+          resolvedDetailedAddress;
+
+        const provinceText = matchedProvince?.name || reverseData.provinceName || '';
+        const districtText = matchedDistrict?.name || reverseData.districtName || '';
+        const wardText = matchedWard?.name || reverseData.wardName || '';
+
+        composedAddress = [resolvedDetailedAddress, wardText, districtText, provinceText]
+          .filter(Boolean)
+          .join(', ') || reverseData.formattedAddress || suggestion.displayName;
+      }
+    } catch {
+      // Keep fallback suggestion text when reverse geocoding/matching fails.
+    }
+
+    setDetailedAddress(resolvedDetailedAddress);
+    setForm((prev) => ({
+      ...prev,
+      addressText: composedAddress,
+      latitude: suggestion.latitude,
+      longitude: suggestion.longitude,
+    }));
+  };
+
+  const mapPickerPosition = {
+    latitude: Number(form.latitude) || 10.8231,
+    longitude: Number(form.longitude) || 106.6297,
+  };
+
+  const handleMapPositionChange = ({ latitude, longitude }: { latitude: number; longitude: number }) => {
+    setSelectedExistingAddressId(null);
+    setForm((prev) => ({
+      ...prev,
+      latitude,
+      longitude,
+    }));
+  };
+
+  const handleConfirmMapSelection = async () => {
+    try {
+      setMapConfirmLoading(true);
+      setSelectedExistingAddressId(null);
+
+      const reverseData = await geocodingService.reverseGeocodeDetails(mapPickerPosition.latitude, mapPickerPosition.longitude);
+      if (!reverseData) {
+        toast.error('Không thể xác định địa chỉ từ vị trí đã chọn.');
+        return;
+      }
+
+      const matchedProvince = provinces.find((province) => (
+        isNameMatch(reverseData.provinceName, province.name) ||
+        isNameMatch(reverseData.provinceName, province.full_name) ||
+        isNameMatch(reverseData.formattedAddress, province.name) ||
+        isNameMatch(reverseData.formattedAddress, province.full_name)
+      ));
+
+      let matchedDistrict: District | undefined;
+      let matchedWard: Ward | undefined;
+
+      if (matchedProvince) {
+        setSelectedProvince(matchedProvince.code);
+        const provinceDistricts = await getDistrictsByProvince(matchedProvince.code);
+        setDistricts(provinceDistricts);
+
+        matchedDistrict = provinceDistricts.find((district) => (
+          isNameMatch(reverseData.districtName, district.name) ||
+          isNameMatch(reverseData.districtName, district.full_name) ||
+          isNameMatch(reverseData.formattedAddress, district.name) ||
+          isNameMatch(reverseData.formattedAddress, district.full_name)
+        ));
+
+        if (matchedDistrict) {
+          setSelectedDistrict(matchedDistrict.code);
+          const districtWards = await getWardsByDistrict(matchedDistrict.code);
+          setWards(districtWards);
+
+          matchedWard = districtWards.find((ward) => (
+            isNameMatch(reverseData.wardName, ward.name) ||
+            isNameMatch(reverseData.wardName, ward.full_name) ||
+            isNameMatch(reverseData.formattedAddress, ward.name) ||
+            isNameMatch(reverseData.formattedAddress, ward.full_name)
+          ));
+
+          if (matchedWard) {
+            setSelectedWard(matchedWard.code);
+          }
+        }
+      }
+
+      const resolvedDetailedAddress =
+        reverseData.detailedAddress ||
+        reverseData.formattedAddress.split(',')[0]?.trim() ||
+        detailedAddress ||
+        '';
+
+      const provinceText = matchedProvince?.name || reverseData.provinceName || '';
+      const districtText = matchedDistrict?.name || reverseData.districtName || '';
+      const wardText = matchedWard?.name || reverseData.wardName || '';
+
+      const composedAddress = [resolvedDetailedAddress, wardText, districtText, provinceText]
+        .filter(Boolean)
+        .join(', ');
+
+      setDetailedAddress(resolvedDetailedAddress);
+      setForm((prev) => ({
+        ...prev,
+        latitude: mapPickerPosition.latitude,
+        longitude: mapPickerPosition.longitude,
+        addressText: composedAddress || reverseData.formattedAddress || prev.addressText,
+      }));
+
+      toast.success('Đã xác nhận vị trí trên bản đồ.');
+    } catch (error) {
+      console.error('Failed to confirm map selection:', error);
+      toast.error('Không thể xác nhận vị trí trên bản đồ.');
+    } finally {
+      setMapConfirmLoading(false);
+    }
+  };
+
+  const handleDeleteAddress = (addressId: string | number, idForSelect: string | number) => {
+    Alert.alert('Xác nhận xóa', 'Bạn có chắc muốn xóa địa chỉ này không?', [
+      { text: 'Hủy', style: 'cancel' },
+      {
+        text: 'Xóa',
+        style: 'destructive',
+        onPress: async () => {
+          const ok = await deleteCustomerAddress(addressId);
+          if (!ok) {
+            toast.error('Không thể xóa địa chỉ. Vui lòng thử lại.');
+            return;
+          }
+
+          const remaining = customerAddresses.filter((item) => !isSameAddressId(item.addressId, addressId));
+          setCustomerAddresses(remaining);
+
+          if (isSameAddressId(selectedExistingAddressId, idForSelect)) {
+            const next = remaining.find((item) => item.isDefault) || remaining[0];
+            if (next) {
+              const nextId = next.addressId ?? null;
+              const nextText = next.addressText || next.fullAddress || '';
+              setSelectedExistingAddressId(nextId);
+              setDetailedAddress(nextText);
+              setForm((prev) => ({
+                ...prev,
+                addressText: nextText,
+                latitude: typeof next.latitude === 'number' ? next.latitude : prev.latitude,
+                longitude: typeof next.longitude === 'number' ? next.longitude : prev.longitude,
+              }));
+            } else {
+              setSelectedExistingAddressId(null);
+              setDetailedAddress('');
+              setForm((prev) => ({ ...prev, addressText: '', latitude: 0, longitude: 0 }));
+            }
+          }
+
+          toast.success('Đã xóa địa chỉ.');
+        },
+      },
+    ]);
   };
 
   const handleChangePassword = async () => {
@@ -242,7 +858,7 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
 
         <View style={styles.infoRow}>
           <Text style={styles.infoLabel}>Địa chỉ</Text>
-          <Text style={styles.infoValue}>{profile?.addressText || 'Chưa thiết lập'}</Text>
+          <Text style={styles.infoValue}>{resolvedProfileAddress || 'Chưa thiết lập'}</Text>
         </View>
         <View style={styles.divider} />
 
@@ -351,7 +967,7 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
           <TextInput 
             style={styles.input}
             value={form.phoneNumber}
-            onChangeText={(t) => setForm(p => ({...p, phoneNumber: t}))}
+            onChangeText={(t) => setForm(p => ({...p, phoneNumber: t.replace(/\D/g, '')}))}
             placeholder="0912..."
             keyboardType="phone-pad"
           />
@@ -376,12 +992,13 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
       </View>
 
       <View style={styles.inputGroup}>
-        <Text style={styles.inputLabel}>Ngày sinh (YYYY-MM-DD) <Text style={styles.required}>*</Text></Text>
+        <Text style={styles.inputLabel}>Ngày sinh (DD/MM/YYYY) <Text style={styles.required}>*</Text></Text>
         <TextInput 
           style={styles.input}
           value={form.dateOfBirth}
-          onChangeText={(t) => setForm(p => ({...p, dateOfBirth: t}))}
-          placeholder="Ví dụ: 1999-12-30"
+          onChangeText={(t) => setForm(p => ({...p, dateOfBirth: t.replace(/[^\d/]/g, '')}))}
+          placeholder="Ví dụ: 29/04/2006"
+          keyboardType="number-pad"
         />
       </View>
 
@@ -391,12 +1008,111 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
         <Text style={styles.sectionTitle}>Địa chỉ liên lạc</Text>
       </View>
 
+      {customerAddresses.length > 0 && (
+        <View style={styles.savedAddressSection}>
+          <View style={styles.savedAddressHeader}>
+            <Text style={styles.inputLabel}>Địa chỉ đã lưu</Text>
+            <TouchableOpacity
+              onPress={() => {
+                setSelectedExistingAddressId(null);
+                setSelectedProvince(null);
+                setSelectedDistrict(null);
+                setSelectedWard(null);
+                setDetailedAddress('');
+                setAddressSuggestions([]);
+                setForm((prev) => ({
+                  ...prev,
+                  addressText: '',
+                  latitude: 0,
+                  longitude: 0,
+                }));
+              }}
+            >
+              <Text style={styles.linkBtnText}>
+                {selectedExistingAddressId === null ? 'Đang nhập địa chỉ mới' : 'Nhập địa chỉ mới'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {customerAddresses.map((addr, index) => {
+            const id = addr.addressId ?? `address-${index}`;
+            const label = addr.addressText || addr.fullAddress || 'Địa chỉ chưa rõ';
+            const isSelected = isSameAddressId(selectedExistingAddressId, id);
+            return (
+              <TouchableOpacity
+                key={String(id)}
+                style={[styles.savedAddressItem, isSelected && styles.savedAddressItemActive]}
+                onPress={() => {
+                  setSelectedExistingAddressId(id);
+                  setSelectedProvince(null);
+                  setSelectedDistrict(null);
+                  setSelectedWard(null);
+                  setDetailedAddress(label);
+                  setAddressSuggestions([]);
+                  setForm((prev) => ({
+                    ...prev,
+                    addressText: label,
+                    latitude: typeof addr.latitude === 'number' ? addr.latitude : prev.latitude,
+                    longitude: typeof addr.longitude === 'number' ? addr.longitude : prev.longitude,
+                  }));
+                }}
+              >
+                <View style={styles.savedAddressTopRow}>
+                  <View style={styles.savedAddressBadges}>
+                    {!!addr.isDefault && <Text style={styles.defaultBadge}>Mặc định</Text>}
+                    {isSelected && <Text style={styles.selectedBadge}>Đang dùng</Text>}
+                  </View>
+                </View>
+                <Text style={styles.savedAddressText}>{label}</Text>
+
+                {isSelected && (
+                  <View style={styles.savedAddressActionRow}>
+                    {!!addr.addressId && !addr.isDefault && (
+                      <TouchableOpacity
+                        style={styles.savedAddressActionBtn}
+                        onPress={async () => {
+                          const ok = await setDefaultCustomerAddress(addr.addressId as string | number);
+                          if (!ok) {
+                            toast.error('Không thể đặt mặc định.');
+                            return;
+                          }
+
+                          setCustomerAddresses((prev) => prev.map((item) => ({
+                            ...item,
+                            isDefault: isSameAddressId(item.addressId, addr.addressId),
+                          })));
+                          toast.success('Đã đặt địa chỉ mặc định.');
+                        }}
+                      >
+                        <Text style={styles.savedAddressActionText}>Đặt mặc định</Text>
+                      </TouchableOpacity>
+                    )}
+
+                    {!!addr.addressId && !addr.isDefault && (
+                      <TouchableOpacity
+                        style={[styles.savedAddressActionBtn, styles.savedAddressDeleteBtn]}
+                        onPress={() => handleDeleteAddress(addr.addressId as string | number, id)}
+                      >
+                        <Text style={[styles.savedAddressActionText, styles.savedAddressDeleteText]}>Xóa</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+
       <SelectModal
         label="Tỉnh / Thành phố"
         placeholder="Chọn tỉnh/thành"
         value={selectedProvince}
         options={provinces.map(p => ({ value: p.code, label: p.name }))}
-        onSelect={(val) => setSelectedProvince(val as number)}
+        onSelect={(val) => {
+          setSelectedExistingAddressId(null);
+          setSelectedProvince(val as number);
+        }}
       />
       
       <View style={{ flexDirection: 'row', gap: 12 }}>
@@ -406,7 +1122,10 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
             placeholder="Chọn quận/huyện"
             value={selectedDistrict}
             options={districts.map(d => ({ value: d.code, label: d.name }))}
-            onSelect={(val) => setSelectedDistrict(val as number)}
+            onSelect={(val) => {
+              setSelectedExistingAddressId(null);
+              setSelectedDistrict(val as number);
+            }}
             disabled={!selectedProvince}
           />
         </View>
@@ -416,7 +1135,10 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
             placeholder="Chọn phường/xã"
             value={selectedWard}
             options={wards.map(w => ({ value: w.code, label: w.name }))}
-            onSelect={(val) => setSelectedWard(val as number)}
+            onSelect={(val) => {
+              setSelectedExistingAddressId(null);
+              setSelectedWard(val as number);
+            }}
             disabled={!selectedDistrict}
           />
         </View>
@@ -427,40 +1149,75 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, onRel
         <TextInput 
           style={styles.input}
           value={detailedAddress}
-          onChangeText={setDetailedAddress}
+          onChangeText={(value) => {
+            setSelectedExistingAddressId(null);
+            setDetailedAddress(value);
+          }}
           placeholder="Ví dụ: Số 12, Đường Lê Lợi"
         />
       </View>
+
+      {loadingAddressSuggestions && (
+        <Text style={styles.suggestionLoadingText}>Đang tìm gợi ý địa chỉ...</Text>
+      )}
+      {!loadingAddressSuggestions && addressSuggestions.length > 0 && (
+        <View style={styles.suggestionBox}>
+          {addressSuggestions.map((suggestion, index) => (
+            <TouchableOpacity
+              key={`${suggestion.latitude}-${suggestion.longitude}-${index}`}
+              style={styles.suggestionItem}
+              onPress={() => handlePickAddressSuggestion(suggestion)}
+            >
+              <Text style={styles.suggestionText}>{suggestion.displayName}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
 
       <View style={styles.addressPreviewBox}>
         <Text style={styles.addressPreviewText}>📍 {form.addressText || 'Chưa có thông tin địa chỉ đầy đủ'}</Text>
       </View>
 
-      {/* GPS Location Box */}
-      <View style={styles.gpsBox}>
-        <View>
-          <Text style={{ fontWeight: '600', color: '#374151' }}>Tọa độ GPS <Text style={styles.required}>*</Text></Text>
-          <Text style={{ fontSize: 12, color: '#6b7280' }}>
-            {form.latitude !== 0 ? `Lat: ${form.latitude.toFixed(4)}, Lng: ${form.longitude.toFixed(4)}` : 'Chưa thiết lập'}
-          </Text>
+      <View style={styles.inputGroup}>
+        <View style={styles.mapHeaderRow}>
+          <Text style={styles.inputLabel}>Bản đồ vị trí</Text>
+          <TouchableOpacity style={styles.mapCurrentLocationBtn} onPress={handleGetLocation} disabled={loading}>
+            {loading ? <ActivityIndicator size="small" color="#fff" /> : <MapPin color="#fff" size={14} />}
+            <Text style={styles.mapCurrentLocationText}>Dùng vị trí hiện tại</Text>
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.gpsBtn} onPress={handleGetLocation} disabled={loading}>
-          {loading ? <ActivityIndicator size="small" color="#fff" /> : <MapPin color="#fff" size={16} />}
-          <Text style={styles.gpsBtnText}>Lấy vị trí</Text>
-        </TouchableOpacity>
+        <AddressMapPicker
+          position={mapPickerPosition}
+          onPositionChange={handleMapPositionChange}
+          height={260}
+        />
+        <View style={styles.mapActionRow}>
+          <TouchableOpacity
+            style={styles.mapConfirmBtn}
+            onPress={handleConfirmMapSelection}
+            disabled={mapConfirmLoading}
+          >
+            <Text style={styles.mapConfirmBtnText}>
+              {mapConfirmLoading ? 'Đang xác nhận...' : 'Xác nhận vị trí đã chọn'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.mapHintText}>Nhấn vào bản đồ hoặc kéo ghim để chỉnh vị trí. Tọa độ sẽ tự cập nhật theo vị trí đã chọn.</Text>
       </View>
 
       <View style={styles.actionRow}>
-        <TouchableOpacity 
-          style={styles.cancelBtn} 
-          onPress={() => setIsEditing(false)}
-          disabled={loading}
-        >
-          <Text style={styles.cancelBtnText}>Hủy</Text>
-        </TouchableOpacity>
+        {!requiredSetup && (
+          <TouchableOpacity 
+            style={styles.cancelBtn} 
+            onPress={() => setIsEditing(false)}
+            disabled={loading}
+          >
+            <Text style={styles.cancelBtnText}>Hủy</Text>
+          </TouchableOpacity>
+        )}
         
         <TouchableOpacity 
-          style={styles.saveBtn} 
+          style={[styles.saveBtn, requiredSetup && { flex: 1 }]} 
           onPress={handleSubmit}
           disabled={loading}
         >
@@ -626,6 +1383,153 @@ const styles = StyleSheet.create({
     color: '#4b5563',
     fontSize: 14,
     lineHeight: 20,
+  },
+  savedAddressSection: {
+    marginBottom: 16,
+    gap: 10,
+  },
+  savedAddressHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  linkBtnText: {
+    fontSize: 12,
+    color: '#2563eb',
+    fontWeight: '600',
+  },
+  savedAddressItem: {
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 10,
+    gap: 8,
+  },
+  savedAddressItemActive: {
+    borderColor: '#1d4ed8',
+    backgroundColor: '#eff6ff',
+  },
+  savedAddressTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  savedAddressBadges: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  defaultBadge: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#166534',
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 20,
+  },
+  selectedBadge: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
+    backgroundColor: '#1d4ed8',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 20,
+  },
+  savedAddressText: {
+    fontSize: 13,
+    color: '#1f2937',
+    lineHeight: 18,
+  },
+  savedAddressActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  savedAddressActionBtn: {
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#fff',
+  },
+  savedAddressActionText: {
+    fontSize: 12,
+    color: '#1d4ed8',
+    fontWeight: '700',
+  },
+  savedAddressDeleteBtn: {
+    borderColor: '#fecaca',
+  },
+  savedAddressDeleteText: {
+    color: '#b91c1c',
+  },
+  suggestionLoadingText: {
+    fontSize: 12,
+    color: '#6b7280',
+    marginTop: -4,
+    marginBottom: 8,
+  },
+  suggestionBox: {
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  suggestionItem: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  suggestionText: {
+    fontSize: 13,
+    color: '#374151',
+  },
+  mapActionRow: {
+    marginTop: 10,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  mapHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  mapCurrentLocationBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#2563eb',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  mapCurrentLocationText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  mapConfirmBtn: {
+    backgroundColor: '#111827',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  mapConfirmBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  mapHintText: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#6b7280',
   },
   gpsBox: {
     flexDirection: 'row',

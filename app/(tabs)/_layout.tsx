@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { Tabs, useRouter } from 'expo-router';
+import React, { useEffect, useRef, useState } from 'react';
+import { Tabs, usePathname, useRouter } from 'expo-router';
 import { View, Text, TouchableOpacity, StyleSheet, Image, Modal, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { Hop as Home, Compass, User, Bell, ShoppingCart, Wallet, RefreshCw, Plus, X } from 'lucide-react-native';
 import { getMyWallet, WalletInfo, createTopupLink } from '../../services/walletService';
-import { getCurrentUser } from '../../services/auth';
+import { getCurrentUser, getProfile } from '../../services/auth';
 import { cartService } from '../../services/cartService';
 import { fetchUnreadNotificationCount } from '../../services/notificationService';
 
@@ -228,7 +228,7 @@ function HeaderLeft() {
   return (
     <View style={styles.headerLeftContainer}>
       <Image
-        source={require('@/assets/images/logo1.png')}
+        source={require('@/assets/images/logo.png')}
         style={styles.logoHeader}
         resizeMode="contain"
       />
@@ -237,8 +237,108 @@ function HeaderLeft() {
 }
 
 export default function TabLayout() {
+  const router = useRouter();
+  const pathname = usePathname();
   const [cartCount, setCartCount] = useState<number>(0);
+  const [gateChecking, setGateChecking] = useState(true);
+  const [profileBlocked, setProfileBlocked] = useState(false);
+  const hasRedirectedToProfileRef = useRef(false);
   const user = getCurrentUser();
+
+  const isCustomerUser = () => {
+    const role = String((user as any)?.role || '').toLowerCase();
+    const roles = Array.isArray((user as any)?.roles)
+      ? (user as any).roles.map((x: any) => String(x).toLowerCase())
+      : [];
+    return role === 'customer' || roles.includes('customer');
+  };
+
+  const isProfileIncomplete = async (): Promise<boolean> => {
+    if (!user || !isCustomerUser()) return false;
+
+    try {
+      const profile = await getProfile();
+      const hasFullName = !!profile?.fullName?.trim();
+      const hasPhoneNumber = !!profile?.phoneNumber?.trim();
+      return !(hasFullName && hasPhoneNumber);
+    } catch {
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    const enforceProfileGate = async () => {
+      if (!user || !isCustomerUser()) {
+        if (active) {
+          setProfileBlocked(false);
+          setGateChecking(false);
+        }
+        return;
+      }
+
+      if (active) setGateChecking(true);
+      const blocked = await isProfileIncomplete();
+
+      if (!active) return;
+
+      setProfileBlocked(blocked);
+      setGateChecking(false);
+    };
+
+    enforceProfileGate();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.email]);
+
+  useEffect(() => {
+    if (!profileBlocked) {
+      hasRedirectedToProfileRef.current = false;
+      return;
+    }
+
+    const onProfileScreen = pathname?.includes('/profile');
+    if (onProfileScreen) {
+      hasRedirectedToProfileRef.current = true;
+      return;
+    }
+
+    if (hasRedirectedToProfileRef.current) {
+      return;
+    }
+
+    hasRedirectedToProfileRef.current = true;
+    router.replace('/profile?firstTime=true' as any);
+  }, [profileBlocked, pathname]);
+
+  const guardedTabPress = (targetPath: '/(tabs)' | '/explore' | '/cart') => {
+    return async (e: any) => {
+      if (!user || !isCustomerUser()) return;
+
+      e.preventDefault();
+      const blocked = await isProfileIncomplete();
+      setProfileBlocked(blocked);
+
+      if (blocked) {
+        Alert.alert(
+          'Hoàn thành hồ sơ',
+          'Bạn cần hoàn thành hồ sơ trước khi vào Trang chủ, Khám phá hoặc Giỏ hàng.',
+          [
+            {
+              text: 'Đi đến hồ sơ',
+              onPress: () => router.push('/profile?firstTime=true' as any),
+            },
+          ]
+        );
+        return;
+      }
+
+      router.push(targetPath as any);
+    };
+  };
 
   useEffect(() => {
     if (!user) {
@@ -260,6 +360,15 @@ export default function TabLayout() {
     const interval = setInterval(fetchCart, 30000);
     return () => clearInterval(interval);
   }, [user?.email]);
+
+  if (gateChecking) {
+    return (
+      <View style={styles.gateLoadingContainer}>
+        <ActivityIndicator size="large" color="#000" />
+        <Text style={styles.gateLoadingText}>Đang kiểm tra hồ sơ...</Text>
+      </View>
+    );
+  }
 
   return (
     <Tabs
@@ -283,6 +392,10 @@ export default function TabLayout() {
         options={{
           title: 'Trang chủ',
           tabBarIcon: ({ color, size }) => <Home color={color} size={size} />,
+          tabBarButtonTestID: profileBlocked ? 'tab-index-blocked' : 'tab-index-open',
+        }}
+        listeners={{
+          tabPress: guardedTabPress('/(tabs)'),
         }}
       />
       <Tabs.Screen
@@ -292,6 +405,10 @@ export default function TabLayout() {
           tabBarIcon: ({ color, size }) => (
             <Compass color={color} size={size} />
           ),
+          tabBarButtonTestID: profileBlocked ? 'tab-explore-blocked' : 'tab-explore-open',
+        }}
+        listeners={{
+          tabPress: guardedTabPress('/explore'),
         }}
       />
       <Tabs.Screen
@@ -306,7 +423,11 @@ export default function TabLayout() {
             backgroundColor: '#ef4444',
             color: 'white',
             fontSize: 10,
-          }
+          },
+          tabBarButtonTestID: profileBlocked ? 'tab-cart-blocked' : 'tab-cart-open',
+        }}
+        listeners={{
+          tabPress: guardedTabPress('/cart'),
         }}
       />
       <Tabs.Screen
@@ -321,6 +442,18 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
+  gateLoadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff',
+    gap: 10,
+  },
+  gateLoadingText: {
+    color: '#64748b',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   headerRightOuter: {
     position: 'relative',
     zIndex: 100,
@@ -458,11 +591,12 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   headerLeftContainer: {
-    paddingLeft: 0,
+    paddingLeft: 12,
+    paddingVertical: 4,
   },
   logoHeader: {
-    width: 180,
-    height: 50,
+    width: 148,
+    height: 52,
   },
   modalOverlay: {
     flex: 1,

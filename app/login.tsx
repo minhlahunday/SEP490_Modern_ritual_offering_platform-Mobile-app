@@ -9,8 +9,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Image,
-  SafeAreaView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Eye, EyeOff, AlertCircle } from 'lucide-react-native';
@@ -37,8 +37,6 @@ export default function LoginScreen() {
     email: '',
     password: '',
     confirmPassword: '',
-    name: '',
-    phone: '',
     agreeTerms: false,
   });
 
@@ -81,7 +79,7 @@ export default function LoginScreen() {
     setError(null);
     setShowRegisterPassword(false);
     setShowRegisterConfirmPassword(false);
-    setFormData((prev) => ({ ...prev, confirmPassword: '', name: '', phone: '', agreeTerms: false }));
+    setFormData((prev) => ({ ...prev, confirmPassword: '', agreeTerms: false }));
   };
 
   const switchToLogin = () => {
@@ -144,30 +142,7 @@ export default function LoginScreen() {
             const profile = await getProfile();
             const hasFullName = !!profile.fullName?.trim();
             const hasPhoneNumber = !!profile.phoneNumber?.trim();
-            const hasDateOfBirth = !!profile.dateOfBirth;
-            let hasAddress = !!profile.addressText?.trim();
-
-            if (!hasAddress) {
-              try {
-                // @ts-ignore
-                const token = typeof localStorage !== 'undefined' ? localStorage.getItem('smart-child-token') : '';
-                if (token) {
-                  const addressResponse = await fetch('https://vietritual.click/api/addresses', {
-                    headers: {
-                      'Authorization': `Bearer ${token}`
-                    }
-                  });
-                  if (addressResponse.ok) {
-                    const addressData = await addressResponse.json().catch(() => null);
-                    const addressList = Array.isArray(addressData) ? addressData : 
-                                      (addressData?.isSuccess && Array.isArray(addressData.result) ? addressData.result : []);
-                    hasAddress = addressList.some((addr: any) => !!(addr?.addressText || addr?.fullAddress || '').trim());
-                  }
-                }
-              } catch (e) {}
-            }
-
-            const isProfileIncomplete = !(hasFullName && hasPhoneNumber && hasDateOfBirth && hasAddress);
+            const isProfileIncomplete = !(hasFullName && hasPhoneNumber);
 
             if (isProfileIncomplete) {
               // @ts-ignore
@@ -179,7 +154,7 @@ export default function LoginScreen() {
                 icon: 'info',
                 confirmButtonText: 'Đồng ý'
               });
-              router.replace('/(tabs)'); // Replace with actual profile route
+              router.replace('/profile?firstTime=true');
               return;
             }
           } catch (e) {
@@ -198,7 +173,7 @@ export default function LoginScreen() {
       }
     } else {
       // Register
-      if (!formData.name || !formData.email || !formData.phone || !formData.password) {
+      if (!formData.email || !formData.password) {
         setError('Vui lòng điền đầy đủ thông tin');
         return;
       }
@@ -213,8 +188,9 @@ export default function LoginScreen() {
 
       try {
         setError(null);
+        const username = String(formData.email || '').split('@')[0].trim() || 'customer';
         const registerData: RegisterRequest = {
-          username: formData.name,
+          username,
           email: formData.email,
           password: formData.password,
         };
@@ -293,19 +269,6 @@ export default function LoginScreen() {
 
             {/* Form Fields */}
             <View style={styles.formSpace}>
-              {!isLogin && (
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>Tên đầy đủ</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Nguyễn Văn A"
-                    value={formData.name}
-                    onChangeText={(val) => handleInputChange('name', val)}
-                    autoCapitalize="words"
-                  />
-                </View>
-              )}
-
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>Email</Text>
                 <TextInput
@@ -317,19 +280,6 @@ export default function LoginScreen() {
                   autoCapitalize="none"
                 />
               </View>
-
-              {!isLogin && (
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>Số điện thoại</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="0901 234 567"
-                    value={formData.phone}
-                    onChangeText={(val) => handleInputChange('phone', val)}
-                    keyboardType="phone-pad"
-                  />
-                </View>
-              )}
 
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>Mật khẩu</Text>

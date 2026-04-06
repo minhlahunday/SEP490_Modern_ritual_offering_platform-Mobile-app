@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Alert, ScrollView, Image } from 'react-native';
-import { getVendorRegistration, VendorRegistrationResponse, registerVendor, VendorDocumentRequest } from '../services/auth';
+import { getVendorRegistration, VendorRegistrationResponse, registerVendor, VendorDocumentRequest, resubmitVendorRegistration } from '../services/auth';
 import { Camera, MapPin, Store, CheckCircle, Clock, XCircle, FileIcon } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import toast from '../services/toast';
 import { getProvinces, getDistrictsByProvince, getWardsByDistrict, Province, District, Ward } from '../services/vietnamAddressApi';
+import { geocodingService } from '../services/geocodingService';
 import SelectModal from './SelectModal';
+import AddressMapPicker from './AddressMapPicker';
 
 export default function VendorRegisterTab() {
   const [loading, setLoading] = useState(true);
@@ -42,6 +44,26 @@ export default function VendorRegisterTab() {
   const [selectedDistrict, setSelectedDistrict] = useState<number | null>(null);
   const [selectedWard, setSelectedWard] = useState<number | null>(null);
   const [detailedAddress, setDetailedAddress] = useState('');
+  const [mapConfirmLoading, setMapConfirmLoading] = useState(false);
+
+  const normalizeAddressText = (value?: string | null): string => {
+    if (!value) return '';
+    return value
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\b(tinh|thanh pho|quan|huyen|phuong|xa|thi tran|thi xa|tp\.?|q\.?|p\.?)\b/g, ' ')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  const isNameMatch = (left?: string, right?: string): boolean => {
+    const leftNorm = normalizeAddressText(left);
+    const rightNorm = normalizeAddressText(right);
+    if (!leftNorm || !rightNorm) return false;
+    return leftNorm.includes(rightNorm) || rightNorm.includes(leftNorm);
+  };
 
   const loadData = async () => {
     try {
@@ -138,8 +160,108 @@ export default function VendorRegisterTab() {
       }));
       toast.success('Đã lấy vị trí cửa hàng thành công');
     } catch (err) {
-      console.error(err);
-      toast.error('Lỗi khi lấy vị trí');
+      const message = err instanceof Error ? err.message : '';
+      const isUnavailable = /Current location is unavailable|LOCATION_UNAVAILABLE|E_LOCATION_UNAVAILABLE/i.test(message);
+      console.warn('Get vendor current location failed:', message || err);
+      toast.error(
+        isUnavailable
+          ? 'Không lấy được vị trí hiện tại. Hãy bật GPS hoặc chọn trực tiếp trên bản đồ.'
+          : 'Lỗi khi lấy vị trí.'
+      );
+    }
+  };
+
+  const mapPickerPosition = {
+    latitude: Number(form.shopLatitude) || 10.8231,
+    longitude: Number(form.shopLongitude) || 106.6297,
+  };
+
+  const handleMapPositionChange = ({ latitude, longitude }: { latitude: number; longitude: number }) => {
+    setForm((prev) => ({
+      ...prev,
+      shopLatitude: latitude,
+      shopLongitude: longitude,
+    }));
+  };
+
+  const handleConfirmMapSelection = async () => {
+    try {
+      setMapConfirmLoading(true);
+
+      const reverseData = await geocodingService.reverseGeocodeDetails(mapPickerPosition.latitude, mapPickerPosition.longitude);
+      if (!reverseData) {
+        toast.error('Không thể xác định địa chỉ từ vị trí đã chọn.');
+        return;
+      }
+
+      const matchedProvince = provinces.find((province) => (
+        isNameMatch(reverseData.provinceName, province.name) ||
+        isNameMatch(reverseData.provinceName, province.full_name) ||
+        isNameMatch(reverseData.formattedAddress, province.name) ||
+        isNameMatch(reverseData.formattedAddress, province.full_name)
+      ));
+
+      let matchedDistrict: District | undefined;
+      let matchedWard: Ward | undefined;
+
+      if (matchedProvince) {
+        setSelectedProvince(matchedProvince.code);
+        const provinceDistricts = await getDistrictsByProvince(matchedProvince.code);
+        setDistricts(provinceDistricts);
+
+        matchedDistrict = provinceDistricts.find((district) => (
+          isNameMatch(reverseData.districtName, district.name) ||
+          isNameMatch(reverseData.districtName, district.full_name) ||
+          isNameMatch(reverseData.formattedAddress, district.name) ||
+          isNameMatch(reverseData.formattedAddress, district.full_name)
+        ));
+
+        if (matchedDistrict) {
+          setSelectedDistrict(matchedDistrict.code);
+          const districtWards = await getWardsByDistrict(matchedDistrict.code);
+          setWards(districtWards);
+
+          matchedWard = districtWards.find((ward) => (
+            isNameMatch(reverseData.wardName, ward.name) ||
+            isNameMatch(reverseData.wardName, ward.full_name) ||
+            isNameMatch(reverseData.formattedAddress, ward.name) ||
+            isNameMatch(reverseData.formattedAddress, ward.full_name)
+          ));
+
+          if (matchedWard) {
+            setSelectedWard(matchedWard.code);
+          }
+        }
+      }
+
+      const resolvedDetailedAddress =
+        reverseData.detailedAddress ||
+        reverseData.formattedAddress.split(',')[0]?.trim() ||
+        detailedAddress ||
+        '';
+
+      const provinceText = matchedProvince?.name || reverseData.provinceName || '';
+      const districtText = matchedDistrict?.name || reverseData.districtName || '';
+      const wardText = matchedWard?.name || reverseData.wardName || '';
+
+      const composedAddress = [resolvedDetailedAddress, wardText, districtText, provinceText]
+        .filter(Boolean)
+        .join(', ');
+
+      setDetailedAddress(resolvedDetailedAddress);
+      setForm((prev) => ({
+        ...prev,
+        shopLatitude: mapPickerPosition.latitude,
+        shopLongitude: mapPickerPosition.longitude,
+        shopAddressText: composedAddress || reverseData.formattedAddress || prev.shopAddressText,
+      }));
+
+      toast.success('Đã xác nhận vị trí cửa hàng trên bản đồ.');
+    } catch (error) {
+      console.error('Failed to confirm vendor map selection:', error);
+      toast.error('Không thể xác nhận vị trí đã chọn.');
+    } finally {
+      setMapConfirmLoading(false);
     }
   };
 
@@ -168,21 +290,45 @@ export default function VendorRegisterTab() {
     }
     try {
       setIsRegistering(true);
+
+      const selectedProvinceName = provinces.find((p) => p.code === selectedProvince)?.name;
+      const selectedDistrictName = districts.find((d) => d.code === selectedDistrict)?.name;
+      const selectedWardName = wards.find((w) => w.code === selectedWard)?.name;
+
+      let resolvedLat = form.shopLatitude;
+      let resolvedLng = form.shopLongitude;
+      if (selectedProvinceName && selectedDistrictName && detailedAddress.trim()) {
+        try {
+          const geoResult = await geocodingService.geocodeAddressComponents({
+            detailedAddress: detailedAddress.trim(),
+            wardName: selectedWardName,
+            districtName: selectedDistrictName,
+            provinceName: selectedProvinceName,
+          });
+          if (geoResult) {
+            resolvedLat = geoResult.latitude;
+            resolvedLng = geoResult.longitude;
+          }
+        } catch {
+          // Keep current coordinates if geocoding fails.
+        }
+      }
+
+      const businessTypeMap: Record<string, string> = {
+        '1': 'Individual',
+        '2': 'HouseholdBusiness',
+        '3': 'Enterprises',
+      };
       
       const payload: any = {
         shopName: form.shopName,
         shopDescription: form.shopDescription,
-        businessType: form.businessType,
+        businessType: businessTypeMap[form.businessType] || 'Individual',
         taxCode: form.taxCode,
         shopAddressText: form.shopAddressText,
-        shopLatitude: form.shopLatitude,
-        shopLongitude: form.shopLongitude,
+        shopLatitude: resolvedLat,
+        shopLongitude: resolvedLng,
         dailyCapacity: form.dailyCapacity,
-        shopAvatarUrl: {
-          uri: form.shopAvatarUrl.uri,
-          name: 'shop_avatar.jpg',
-          type: 'image/jpeg',
-        },
         documents: documents.filter(d => d.file).map(d => ({
           documentType: d.documentType,
           file: {
@@ -193,8 +339,40 @@ export default function VendorRegisterTab() {
         })) as VendorDocumentRequest[],
       };
 
-      await registerVendor(payload);
-      toast.success('Đã nộp đơn đăng ký thành công! Vui lòng chờ xét duyệt.');
+      if (!isResubmitting) {
+        payload.shopAvatarUrl = {
+          uri: form.shopAvatarUrl.uri,
+          name: 'shop_avatar.jpg',
+          type: 'image/jpeg',
+        };
+        await registerVendor(payload);
+        toast.success('Đã nộp đơn đăng ký thành công! Vui lòng chờ xét duyệt.');
+      } else {
+        const resubmitPayload: any = {
+          shopName: payload.shopName,
+          shopDescription: payload.shopDescription,
+          businessType: payload.businessType,
+          taxCode: payload.taxCode,
+          shopAddressText: payload.shopAddressText,
+          shopLatitude: payload.shopLatitude,
+          shopLongitude: payload.shopLongitude,
+          dailyCapacity: payload.dailyCapacity,
+          documents: payload.documents,
+        };
+
+        if (form.shopAvatarUrl) {
+          resubmitPayload.shopAvatarUrl = {
+            uri: form.shopAvatarUrl.uri,
+            name: 'shop_avatar.jpg',
+            type: 'image/jpeg',
+          };
+        }
+
+        await resubmitVendorRegistration(resubmitPayload);
+        toast.success('Đã gửi lại hồ sơ thành công!');
+        setIsResubmitting(false);
+      }
+
       loadData();
     } catch (err: any) {
       toast.error(err.message || 'Lỗi khi gửi hồ sơ đăng ký');
@@ -212,7 +390,7 @@ export default function VendorRegisterTab() {
   }
 
   // STATUS VIEW (ALREADY REGISTERED)
-  if (vendorData) {
+  if (vendorData && !isResubmitting) {
     const isApproved = vendorData.verificationStatus === 'Verified';
     const isPending = vendorData.verificationStatus === 'Pending';
     const isRejected = vendorData.verificationStatus === 'Rejected';
@@ -250,7 +428,32 @@ export default function VendorRegisterTab() {
         </View>
 
         {isRejected && (
-          <TouchableOpacity style={styles.resubmitBtn} onPress={() => setIsResubmitting(true)}>
+          <TouchableOpacity
+            style={styles.resubmitBtn}
+            onPress={() => {
+              const businessTypeIdMap: Record<string, string> = {
+                Individual: '1',
+                HouseholdBusiness: '2',
+                HouseholdBussiness: '2',
+                Enterprises: '3',
+                Enterprise: '3',
+              };
+
+              setForm({
+                shopName: vendorData.shopName,
+                shopDescription: vendorData.shopDescription,
+                shopAvatarUrl: null,
+                businessType: businessTypeIdMap[vendorData.businessType] || '1',
+                taxCode: vendorData.taxCode,
+                shopAddressText: vendorData.shopAddressText,
+                shopLatitude: vendorData.shopLatitude,
+                shopLongitude: vendorData.shopLongitude,
+                dailyCapacity: vendorData.dailyCapacity,
+              });
+              setDetailedAddress(vendorData.shopAddressText || '');
+              setIsResubmitting(true);
+            }}
+          >
             <Text style={styles.resubmitBtnText}>Nộp lại hồ sơ</Text>
           </TouchableOpacity>
         )}
@@ -262,7 +465,11 @@ export default function VendorRegisterTab() {
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>Đăng ký trở thành Người Bán</Text>
-      <Text style={styles.cardDesc}>Điền thông tin và tải lên các giấy tờ cần thiết để thiết lập gian hàng của bạn.</Text>
+      <Text style={styles.cardDesc}>
+        {isResubmitting
+          ? 'Cập nhật lại thông tin hồ sơ bị từ chối và gửi lại để xét duyệt.'
+          : 'Điền thông tin và tải lên các giấy tờ cần thiết để thiết lập gian hàng của bạn.'}
+      </Text>
       
       {/* Upload Avatar */}
       <View style={styles.avatarEditContainer}>
@@ -370,18 +577,31 @@ export default function VendorRegisterTab() {
         />
       </View>
 
-      {/* GPS Location Box */}
-      <View style={styles.gpsBox}>
-        <View>
-          <Text style={{ fontWeight: '600', color: '#374151' }}>Tọa độ Cửa hàng <Text style={styles.required}>*</Text></Text>
-          <Text style={{ fontSize: 12, color: '#6b7280' }}>
-            {form.shopLatitude !== 0 ? `Lat: ${form.shopLatitude.toFixed(4)}, Lng: ${form.shopLongitude.toFixed(4)}` : 'Chưa thiết lập'}
-          </Text>
+      <View style={styles.inputGroup}>
+        <View style={styles.mapHeaderRow}>
+          <Text style={styles.inputLabel}>Bản đồ vị trí cửa hàng</Text>
+          <TouchableOpacity style={styles.mapCurrentLocationBtn} onPress={handleGetLocation}>
+            <MapPin color="#fff" size={14} />
+            <Text style={styles.mapCurrentLocationText}>Dùng vị trí hiện tại</Text>
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.gpsBtn} onPress={handleGetLocation}>
-          <MapPin color="#fff" size={16} />
-          <Text style={styles.gpsBtnText}>Lấy vị trí</Text>
-        </TouchableOpacity>
+        <AddressMapPicker
+          position={mapPickerPosition}
+          onPositionChange={handleMapPositionChange}
+          height={260}
+        />
+        <View style={styles.mapActionRow}>
+          <TouchableOpacity
+            style={styles.mapConfirmBtn}
+            onPress={handleConfirmMapSelection}
+            disabled={mapConfirmLoading}
+          >
+            <Text style={styles.mapConfirmBtnText}>
+              {mapConfirmLoading ? 'Đang xác nhận...' : 'Xác nhận ghim'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.mapHintText}>Nhấn lên bản đồ hoặc kéo ghim để chọn vị trí. Tọa độ sẽ tự cập nhật theo điểm ghim.</Text>
       </View>
 
       {/* Documents */}
@@ -417,8 +637,22 @@ export default function VendorRegisterTab() {
         onPress={handleSubmit}
         disabled={isRegistering}
       >
-        {isRegistering ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitBtnText}>Gửi hồ sơ đăng ký</Text>}
+        {isRegistering ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.submitBtnText}>{isResubmitting ? 'Cập nhật & gửi lại hồ sơ' : 'Gửi hồ sơ đăng ký'}</Text>
+        )}
       </TouchableOpacity>
+
+      {isResubmitting && (
+        <TouchableOpacity
+          style={[styles.submitBtn, { backgroundColor: '#e5e7eb', marginTop: 10 }]}
+          onPress={() => setIsResubmitting(false)}
+          disabled={isRegistering}
+        >
+          <Text style={[styles.submitBtnText, { color: '#374151' }]}>Hủy chỉnh sửa</Text>
+        </TouchableOpacity>
+      )}
 
     </View>
   );
@@ -449,9 +683,13 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, marginBottom: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#f3f4f6' },
   sectionTitle: { fontSize: 16, fontWeight: '600', color: '#374151' },
   
-  gpsBox: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#f3f4f6', padding: 12, borderRadius: 8, marginBottom: 24 },
-  gpsBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#2563eb', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6, gap: 6 },
-  gpsBtnText: { color: '#fff', fontWeight: '600', fontSize: 12 },
+  mapHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  mapCurrentLocationBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#2563eb', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8, gap: 6 },
+  mapCurrentLocationText: { color: '#fff', fontWeight: '700', fontSize: 11 },
+  mapActionRow: { marginTop: 10, flexDirection: 'row', justifyContent: 'flex-end' },
+  mapConfirmBtn: { backgroundColor: '#111827', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 },
+  mapConfirmBtnText: { color: '#fff', fontSize: 12, fontWeight: '700', textTransform: 'uppercase' },
+  mapHintText: { marginTop: 8, fontSize: 12, color: '#6b7280' },
 
   documentsContainer: { marginBottom: 24, gap: 12 },
   docItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: '#d1d5db', borderRadius: 8, padding: 12 },

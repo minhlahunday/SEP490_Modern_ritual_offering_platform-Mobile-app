@@ -67,7 +67,7 @@ export default function HomeTab() {
     // 2. Fetch Products
     try {
       setLoadingProducts(true);
-      const apiPackages = await packageService.getAllPackages();
+      const apiPackages = await packageService.getAllPublicPackages(50);
       if (apiPackages && apiPackages.length > 0) {
         const mappedProducts = await packageService.mapToProductsWithVendors(apiPackages);
         setProducts(pickRandomProducts(mappedProducts, 3));
@@ -134,7 +134,7 @@ export default function HomeTab() {
       <ScrollView 
         style={styles.scrollView}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#8B4513']} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#000']} />
         }
       >
         
@@ -142,7 +142,7 @@ export default function HomeTab() {
         <View style={styles.heroSection}>
           {loadingBanners ? (
             <View style={[styles.heroImage, styles.centerChild]}>
-              <ActivityIndicator size="large" color="#8B4513" />
+              <ActivityIndicator size="large" color="#000" />
             </View>
           ) : (
             <ScrollView 
@@ -219,7 +219,7 @@ export default function HomeTab() {
 
         {loadingProducts ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#8B4513" />
+            <ActivityIndicator size="large" color="#000" />
             <Text style={{ marginTop: 10, color: '#888' }}>Đang tải sản phẩm...</Text>
           </View>
         ) : (
@@ -331,8 +331,9 @@ const styles = StyleSheet.create({
   },
   moreText: {
     fontSize: 14,
-    color: '#8B4513',
-    fontWeight: '600',
+    color: '#000',
+    fontWeight: '700',
+    textDecorationLine: 'underline',
   },
   servicesGrid: {
     flexDirection: 'row',
@@ -376,7 +377,7 @@ const styles = StyleSheet.create({
     marginBottom: 28,
   },
   trustBannerOverlay: {
-    backgroundColor: '#9A5B30',
+    backgroundColor: '#000',
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',

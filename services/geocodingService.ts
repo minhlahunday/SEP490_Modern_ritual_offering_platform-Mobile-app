@@ -61,12 +61,59 @@ export interface GoogleMapsResponse {
 
 class GeocodingService {
   private googleApiKey: string;
+  private nominatimCooldownUntil = 0;
+  private suggestionCache = new Map<string, { expiresAt: number; items: AddressSuggestion[] }>();
 
   constructor() {
     this.googleApiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
     console.log('🗺️  Geocoding Service initialized');
     console.log('📍 Primary: OpenStreetMap Nominatim (FREE)');
     console.log('🔑 Fallback: Google Maps', this.googleApiKey ? '(Configured)' : '(Not configured)');
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async fetchNominatimJson<T>(url: string): Promise<T | null> {
+    const now = Date.now();
+    if (now < this.nominatimCooldownUntil) {
+      return null;
+    }
+
+    let attempt = 0;
+    let waitMs = 0;
+
+    while (attempt < 3) {
+      if (waitMs > 0) {
+        await this.sleep(waitMs);
+      }
+
+      const response = await fetch(url, {
+        headers: { 'User-Agent': 'Modern-Ritual-Offering-Platform/1.0' }
+      });
+
+      if (response.ok) {
+        return await response.json();
+      }
+
+      if (response.status === 429) {
+        const retryAfterRaw = response.headers.get('Retry-After');
+        const retryAfterSeconds = retryAfterRaw ? Number(retryAfterRaw) : NaN;
+        const backoff = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+          ? retryAfterSeconds * 1000
+          : Math.min(4000, 700 * Math.pow(2, attempt));
+
+        this.nominatimCooldownUntil = Date.now() + backoff;
+        waitMs = backoff;
+        attempt += 1;
+        continue;
+      }
+
+      return null;
+    }
+
+    return null;
   }
 
   /**
@@ -105,16 +152,9 @@ class GeocodingService {
 
       console.log('🗺️  Calling Nominatim:', address);
 
-      const response = await fetch(url, {
-        headers: { 'User-Agent': 'Modern-Ritual-Offering-Platform/1.0' }
-      });
-
-      if (!response.ok) throw new Error(`Nominatim API error: ${response.status}`);
-
-      const data: NominatimResponse[] = await response.json();
+      const data = await this.fetchNominatimJson<NominatimResponse[]>(url);
+      if (!Array.isArray(data) || data.length === 0) return null;
       console.log('📍 Nominatim raw results:', data.map(r => r.display_name));
-
-      if (!data || data.length === 0) return null;
 
       // --- Bước 1: lọc theo quận/tỉnh bắt buộc ---
       let candidates = data;
@@ -171,7 +211,7 @@ class GeocodingService {
       };
     } catch (error) {
       console.error('❌ Nominatim error:', error);
-      throw error;
+      return null;
     }
   }
 
@@ -464,12 +504,9 @@ class GeocodingService {
     console.log('🗺️ Nominatim structured:', url);
 
     try {
-      const res = await fetch(url, { headers: { 'User-Agent': 'Modern-Ritual-Offering-Platform/1.0' } });
-      if (!res.ok) return null;
-      const data: NominatimResponse[] = await res.json();
+      const data = await this.fetchNominatimJson<NominatimResponse[]>(url);
+      if (!Array.isArray(data) || !data.length) return null;
       console.log('📍 Structured results:', data.map(r => r.display_name));
-
-      if (!data.length) return null;
 
       // Validate phải đúng quận + tỉnh
       const normCity  = params.city  ? this.normalizeVi(params.city)  : null;
@@ -718,15 +755,9 @@ class GeocodingService {
     try {
       // Try Nominatim first (FREE)
       const nominatimUrl = `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&addressdetails=1`;
-      
-      const response = await fetch(nominatimUrl, {
-        headers: {
-          'User-Agent': 'Modern-Ritual-Offering-Platform/1.0'
-        }
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
+
+      const data = await this.fetchNominatimJson<any>(nominatimUrl);
+      if (data) {
         if (data && data.display_name) {
           const address = (data.address || {}) as Record<string, string | undefined>;
 
@@ -825,6 +856,12 @@ class GeocodingService {
     if (!keyword || keyword.length < 3) return [];
 
     try {
+      const cacheKey = `${keyword.toLowerCase()}|${(districtName || '').toLowerCase()}|${(provinceName || '').toLowerCase()}`;
+      const cached = this.suggestionCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        return cached.items;
+      }
+
       const composedQuery = [keyword, districtName, provinceName, 'Vietnam']
         .filter(Boolean)
         .join(', ');
@@ -832,18 +869,23 @@ class GeocodingService {
       const encodedAddress = encodeURIComponent(composedQuery);
       const url = `https://nominatim.openstreetmap.org/search?q=${encodedAddress}&format=json&limit=6&countrycodes=vn&addressdetails=1`;
 
-      const response = await fetch(url, {
-        headers: { 'User-Agent': 'Modern-Ritual-Offering-Platform/1.0' }
-      });
+      const data = await this.fetchNominatimJson<NominatimResponse[]>(url);
+      if (!Array.isArray(data)) {
+        return [];
+      }
 
-      if (!response.ok) return [];
-
-      const data: NominatimResponse[] = await response.json();
-      return data.map((item) => ({
+      const items = data.map((item) => ({
         displayName: item.display_name,
         latitude: parseFloat(item.lat),
         longitude: parseFloat(item.lon),
       }));
+
+      this.suggestionCache.set(cacheKey, {
+        expiresAt: Date.now() + 30 * 1000,
+        items,
+      });
+
+      return items;
     } catch (error) {
       console.error('❌ Error in suggestAddresses:', error);
       return [];

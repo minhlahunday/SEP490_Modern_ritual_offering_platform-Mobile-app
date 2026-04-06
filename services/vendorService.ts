@@ -43,6 +43,65 @@ export interface VendorTier {
 class VendorService {
   // Feature flag: enable vendor API since it is now available
   private enableVendorApi = true;
+
+  private buildVendorIdCandidates(rawVendorId: string): string[] {
+    const id = String(rawVendorId || '').trim();
+    if (!id) return [];
+
+    const decoded = (() => {
+      try {
+        return decodeURIComponent(id).trim();
+      } catch {
+        return id;
+      }
+    })();
+
+    const candidates = new Set<string>();
+    candidates.add(id);
+    candidates.add(decoded);
+
+    if (!decoded.startsWith('profile-')) {
+      candidates.add(`profile-${decoded}`);
+    }
+
+    if (decoded.startsWith('profile-')) {
+      candidates.add(decoded.replace(/^profile-/, ''));
+    }
+
+    return Array.from(candidates).filter(Boolean);
+  }
+
+  private normalizeCompareText(value: string | undefined | null): string {
+    return String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+  }
+
+  private async fetchVendorBySingleId(vendorProfileId: string): Promise<VendorProfile | null> {
+    const response = await fetch(`${API_BASE_URL}/vendors/${vendorProfileId}`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data: ApiResponse<VendorProfile> = await response.json();
+    if (!data.isSuccess || !data.result) {
+      return null;
+    }
+
+    const raw = data.result as VendorProfile;
+    return {
+      ...raw,
+      avatarUrl: raw.avatarUrl || raw.shopAvatarUrl || null,
+      shopAvatarUrl: raw.shopAvatarUrl || raw.avatarUrl || null,
+    };
+  }
   
   /**
    * Lấy thông tin vendor theo ID
@@ -56,41 +115,67 @@ class VendorService {
       return null;
     }
     
+    const candidates = this.buildVendorIdCandidates(vendorProfileId);
+
+    for (const candidate of candidates) {
+      try {
+        const vendor = await this.fetchVendorBySingleId(candidate);
+        if (vendor) {
+          return vendor;
+        }
+      } catch (error: any) {
+        const msg = String(error?.message || '');
+        if (!msg.includes('404')) {
+          console.warn(`⚠️ Failed to fetch vendor by id ${candidate}:`, error);
+        }
+      }
+    }
+
+    console.warn(`⚠️ Vendor not found for id: ${vendorProfileId}`);
+    return null;
+  }
+
+  async resolveVendorProfileId(rawVendorId?: string, shopName?: string): Promise<string | null> {
+    const directCandidates = this.buildVendorIdCandidates(String(rawVendorId || ''));
+
+    for (const candidate of directCandidates) {
+      const fromCache = this.vendorCache.get(candidate);
+      if (fromCache?.profileId) {
+        return fromCache.profileId;
+      }
+
+      const vendor = await this.getVendorById(candidate);
+      if (vendor?.profileId) {
+        this.vendorCache.set(vendor.profileId, vendor);
+        this.vendorCache.set(candidate, vendor);
+        return vendor.profileId;
+      }
+    }
+
     try {
-      console.log('📦 Fetching vendor profile:', vendorProfileId);
-      const response = await fetch(`${API_BASE_URL}/vendors/${vendorProfileId}`, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-        },
+      const all = await this.getAllVendors();
+      const targetId = this.normalizeCompareText(rawVendorId);
+      const targetName = this.normalizeCompareText(shopName);
+
+      const matchedById = all.find((v) => {
+        const pid = this.normalizeCompareText(v.profileId);
+        if (!targetId) return false;
+        return pid === targetId || pid.endsWith(targetId) || pid.includes(targetId);
       });
 
-      if (!response.ok) {
-        console.warn(`⚠️ Vendor API returned ${response.status} for ${vendorProfileId}`);
-        throw new Error(`HTTP error! status: ${response.status}`);
+      if (matchedById?.profileId) {
+        return matchedById.profileId;
       }
 
-      const data: ApiResponse<VendorProfile> = await response.json();
-      
-      if (data.isSuccess && data.result) {
-        const raw = data.result as VendorProfile;
-        const normalized: VendorProfile = {
-          ...raw,
-          // Đảm bảo luôn có avatarUrl và shopAvatarUrl, dùng qua lại nếu thiếu
-          avatarUrl: raw.avatarUrl || raw.shopAvatarUrl || null,
-          shopAvatarUrl: raw.shopAvatarUrl || raw.avatarUrl || null,
-        };
-
-        console.log('✅ Vendor profile loaded:', normalized);
-        return normalized;
-      } else {
-        console.error('❌ API Error:', data.errorMessages);
-        return null;
+      const matchedByName = all.find((v) => this.normalizeCompareText(v.shopName) === targetName);
+      if (matchedByName?.profileId) {
+        return matchedByName.profileId;
       }
     } catch (error) {
-      console.error('❌ Failed to fetch vendor:', error);
-      return null;
+      console.warn('⚠️ Unable to resolve vendor profile id from vendors list:', error);
     }
+
+    return null;
   }
 
   /**

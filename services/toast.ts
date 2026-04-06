@@ -1,19 +1,30 @@
 import { Alert } from 'react-native';
+import Toast from 'react-native-toast-message';
+
+const normalizeMessage = (message: string): string => {
+  const text = String(message || '').trim();
+  if (!text) return 'Đã xảy ra lỗi';
+
+  return text
+    .replace(/^checkout failed:\s*/i, '')
+    .replace(/^error:\s*/i, '')
+    .trim();
+};
 
 export const showSuccess = (message: string) => {
-  Alert.alert('Thành công', message);
+  Toast.show({ type: 'success', text1: 'Thành công', text2: normalizeMessage(message), position: 'top' });
 };
 
 export const showError = (message: string) => {
-  Alert.alert('Lỗi', message);
+  Toast.show({ type: 'error', text1: 'Lỗi', text2: normalizeMessage(message), position: 'top' });
 };
 
 export const showWarning = (message: string) => {
-  Alert.alert('Cảnh báo', message);
+  Toast.show({ type: 'info', text1: 'Cảnh báo', text2: normalizeMessage(message), position: 'top' });
 };
 
 export const showInfo = (message: string) => {
-  Alert.alert('Thông tin', message);
+  Toast.show({ type: 'info', text1: 'Thông tin', text2: normalizeMessage(message), position: 'top' });
 };
 
 export const showConfirm = async (options: {

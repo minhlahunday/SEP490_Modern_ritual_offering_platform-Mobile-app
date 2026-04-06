@@ -277,61 +277,81 @@ export async function register(data: RegisterRequest): Promise<RegisterResponse>
   try {
     console.log('📝 Calling register API...');
     console.log('🌐 API_BASE_URL:', API_BASE_URL);
-    console.log('🔗 Full URL:', `${API_BASE_URL}/api/auth/register`);
     console.log('📤 Request data:', data);
 
-    const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify(data),
-    });
+    const endpointCandidates = [
+      `${API_BASE_URL}/api/auth/register`,
+      `${API_BASE_URL}/auth/register`,
+    ];
 
-    console.log('📡 Response status:', response.status);
+    let lastError = 'Đăng ký thất bại';
 
-    // Đọc response text trước để debug
-    const responseText = await response.text();
-    console.log('📥 Response text:', responseText);
+    for (const endpoint of endpointCandidates) {
+      console.log('🔗 Register URL:', endpoint);
 
-    if (!response.ok) {
-      let errorMessage = `HTTP error! status: ${response.status}`;
-      try {
-        const errorData = JSON.parse(responseText);
-        if (errorData.errorMessages && errorData.errorMessages.length > 0) {
-          errorMessage = errorData.errorMessages.join(', ');
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(data),
+      });
+
+      console.log('📡 Response status:', response.status);
+
+      const responseText = await response.text();
+      console.log('📥 Response text:', responseText);
+
+      if (!response.ok) {
+        let errorMessage = `HTTP error! status: ${response.status}`;
+        try {
+          const errorData = JSON.parse(responseText);
+          if (Array.isArray(errorData?.errorMessages) && errorData.errorMessages.length > 0) {
+            errorMessage = errorData.errorMessages.join(', ');
+          } else if (typeof errorData?.message === 'string' && errorData.message.trim()) {
+            errorMessage = errorData.message.trim();
+          }
+        } catch {
+          errorMessage = responseText || errorMessage;
         }
-      } catch (e) {
-        // Nếu không parse được JSON, dùng text gốc
-        errorMessage = responseText || errorMessage;
+
+        lastError = errorMessage;
+        if (response.status === 404 || response.status === 405) {
+          continue;
+        }
+        throw new Error(errorMessage);
       }
-      throw new Error(errorMessage);
-    }
 
-    const responseData: ApiResponse<RegisterResponse | string> = JSON.parse(responseText);
-    console.log('✅ Register API Response:', responseData);
+      const responseData: ApiResponse<RegisterResponse | string> = JSON.parse(responseText);
+      console.log('✅ Register API Response:', responseData);
 
-    if (responseData.isSuccess) {
-      // Backend might return string message or object
+      if (!responseData.isSuccess) {
+        const serverError = responseData.errorMessages?.join(', ') || 'Đăng ký thất bại';
+        throw new Error(serverError);
+      }
+
       if (typeof responseData.result === 'string') {
-        // Result is just a message string
         return {
           message: responseData.result,
           userId: '',
           email: data.email,
-          username: data.username
+          username: data.username,
         };
-      } else if (responseData.result) {
-        // Result is RegisterResponse object
-        return responseData.result;
-      } else {
-        throw new Error('No result in response');
       }
-    } else {
-      console.error('❌ Register failed:', responseData.errorMessages);
-      throw new Error(responseData.errorMessages.join(', ') || 'Đăng ký thất bại');
+
+      if (responseData.result) {
+        return responseData.result;
+      }
+
+      return {
+        message: 'Đăng ký thành công',
+        email: data.email,
+        username: data.username,
+      };
     }
+
+    throw new Error(lastError);
   } catch (error) {
     console.error('❌ Register error:', error);
     throw error;

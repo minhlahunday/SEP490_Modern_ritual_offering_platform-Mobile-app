@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, SafeAreaView, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Modal } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { User, LogOut, Star, Store, MapPin, ChevronLeft, Package } from 'lucide-react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
@@ -23,6 +24,10 @@ export default function ProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(isFirstTimeSetup);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [hasDismissedSetupPrompt, setHasDismissedSetupPrompt] = useState(false);
+
+  const isProfileIncomplete = !profile?.fullName?.trim() || !profile?.phoneNumber?.trim();
+  const mustCompleteProfile = isFirstTimeSetup && isProfileIncomplete;
 
   // Refresh user state when tab is focused
   useEffect(() => {
@@ -68,6 +73,19 @@ export default function ProfileScreen() {
     loadProfile();
     return () => { mounted = false; };
   }, [user, isFirstTimeSetup]);
+
+  useEffect(() => {
+    if (mustCompleteProfile) {
+      setActiveTab('info');
+      setIsEditing(true);
+    }
+  }, [mustCompleteProfile]);
+
+  useEffect(() => {
+    if (!mustCompleteProfile) {
+      setHasDismissedSetupPrompt(false);
+    }
+  }, [mustCompleteProfile]);
 
   const handleLogout = async () => {
     const { isConfirmed } = await toast.confirm({
@@ -142,7 +160,7 @@ export default function ProfileScreen() {
             <Text style={styles.headerEmail}>{user.email || 'N/A'}</Text>
           </View>
           
-          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
+          <TouchableOpacity style={[styles.logoutBtn, mustCompleteProfile && styles.logoutBtnDisabled]} onPress={handleLogout} disabled={mustCompleteProfile}>
             <LogOut color="#ef4444" size={24} />
           </TouchableOpacity>
         </View>
@@ -156,17 +174,21 @@ export default function ProfileScreen() {
             <User size={18} color={activeTab === 'info' ? '#000' : '#6b7280'} />
             <Text style={[styles.tabText, activeTab === 'info' && styles.tabTextActive]}>Cá nhân</Text>
           </TouchableOpacity>
-           <TouchableOpacity 
+           {/* <TouchableOpacity 
             style={[styles.tabBtn, activeTab === 'reviews' && styles.tabBtnActive]} 
             onPress={() => setActiveTab('reviews')}
           >
             <Star size={18} color={activeTab === 'reviews' ? '#000' : '#6b7280'} />
             <Text style={[styles.tabText, activeTab === 'reviews' && styles.tabTextActive]}>Đánh giá</Text>
-          </TouchableOpacity>
+          </TouchableOpacity> */}
 
           <TouchableOpacity 
-            style={styles.tabBtn} 
-            onPress={() => router.push('/orders' as any)}
+            style={[styles.tabBtn, mustCompleteProfile && styles.tabBtnDisabled]} 
+            onPress={() => {
+              if (mustCompleteProfile) return;
+              router.push('/orders' as any);
+            }}
+            disabled={mustCompleteProfile}
           >
             <Package size={18} color="#6b7280" />
             <Text style={styles.tabText}>Đơn hàng</Text>
@@ -174,8 +196,12 @@ export default function ProfileScreen() {
 
           {profile?.isVendor === false && (
             <TouchableOpacity 
-              style={[styles.tabBtn, activeTab === 'vendor-register' && styles.tabBtnActive]} 
-              onPress={() => setActiveTab('vendor-register')}
+              style={[styles.tabBtn, activeTab === 'vendor-register' && styles.tabBtnActive, mustCompleteProfile && styles.tabBtnDisabled]} 
+              onPress={() => {
+                if (mustCompleteProfile) return;
+                setActiveTab('vendor-register');
+              }}
+              disabled={mustCompleteProfile}
             >
               <Store size={18} color={activeTab === 'vendor-register' ? '#000' : '#6b7280'} />
               <Text style={[styles.tabText, activeTab === 'vendor-register' && styles.tabTextActive]}>Bán hàng</Text>
@@ -190,6 +216,7 @@ export default function ProfileScreen() {
               profile={profile} 
               isEditing={isEditing} 
               setIsEditing={setIsEditing} 
+              requiredSetup={mustCompleteProfile}
               onReload={async () => {
                 const updated = await getProfile();
                 setProfile(updated);
@@ -209,6 +236,26 @@ export default function ProfileScreen() {
           )}
         </View>
       </ScrollView>
+
+      <Modal visible={mustCompleteProfile && !hasDismissedSetupPrompt} transparent animationType="fade">
+        <View style={styles.requiredModalOverlay}>
+          <View style={styles.requiredModalCard}>
+            <Text style={styles.requiredModalIcon}>i</Text>
+            <Text style={styles.requiredModalTitle}>Chào mừng bạn đến với Modern Ritual Offering!</Text>
+            <Text style={styles.requiredModalDesc}>Để tiếp tục, vui lòng hoàn thành thông tin cá nhân của bạn.</Text>
+            <TouchableOpacity
+              style={styles.requiredModalBtn}
+              onPress={() => {
+                setHasDismissedSetupPrompt(true);
+                setActiveTab('info');
+                setIsEditing(true);
+              }}
+            >
+              <Text style={styles.requiredModalBtnText}>Hoàn thành hồ sơ</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -242,11 +289,71 @@ const styles = StyleSheet.create({
   vendorText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
   headerEmail: { fontSize: 14, color: '#6b7280' },
   logoutBtn: { padding: 8, backgroundColor: '#fef2f2', borderRadius: 12 },
+  logoutBtnDisabled: {
+    opacity: 0.4,
+  },
+  tabBtnDisabled: {
+    opacity: 0.45,
+  },
   tabContainer: { flexDirection: 'row', backgroundColor: '#fff', paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb' },
   tabBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 16, borderBottomWidth: 2, borderBottomColor: 'transparent' },
   tabBtnActive: { borderBottomColor: '#000' },
   tabText: { fontSize: 14, fontWeight: '600', color: '#6b7280' },
   tabTextActive: { color: '#000' },
   tabContent: { padding: 16 },
-  emptyTab: { alignItems: 'center', justifyContent: 'center', paddingVertical: 64, backgroundColor: '#fff', borderRadius: 16 }
+  emptyTab: { alignItems: 'center', justifyContent: 'center', paddingVertical: 64, backgroundColor: '#fff', borderRadius: 16 },
+  requiredModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  requiredModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 20,
+    alignItems: 'center',
+  },
+  requiredModalIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    borderWidth: 2,
+    borderColor: '#38bdf8',
+    color: '#38bdf8',
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    fontSize: 30,
+    fontWeight: '800',
+    marginBottom: 14,
+  },
+  requiredModalTitle: {
+    fontSize: 24,
+    lineHeight: 32,
+    fontWeight: '800',
+    color: '#111827',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  requiredModalDesc: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#4b5563',
+    textAlign: 'center',
+    marginBottom: 18,
+  },
+  requiredModalBtn: {
+    backgroundColor: '#9a4d0f',
+    borderRadius: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+  },
+  requiredModalBtnText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 15,
+  },
 });

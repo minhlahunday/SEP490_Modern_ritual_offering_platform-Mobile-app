@@ -1,10 +1,15 @@
 {
   "expo": {
-    "name": "MODERN RITUAL OFFERING NỀN TẢNG MÂM CÚNG HIỆN ĐẠI",
+    "name": "MODERN RITUAL OFFERING",
     "slug": "modern-ritual-offering",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/favicon-circle.png",
+    "splash": {
+      "image": "./assets/images/logo1.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#e5e7eb"
+    },
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -23,7 +28,16 @@
       "expo-router",
       "expo-font",
       "expo-web-browser",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/logo1.png",
+          "imageWidth": 700,
+          "resizeMode": "contain",
+          "backgroundColor": "#e5e7eb"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
