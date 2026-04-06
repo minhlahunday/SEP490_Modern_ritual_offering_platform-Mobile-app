@@ -131,7 +131,7 @@ export default function ProfileScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['left', 'right']}>
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
         
         {/* HEADER */}

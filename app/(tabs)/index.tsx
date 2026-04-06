@@ -129,6 +129,17 @@ export default function HomeTab() {
 
   const displayServices = dynamicServices.length > 0 ? dynamicServices : services;
 
+  const handlePressService = (serviceTitle: string) => {
+    const normalizedTitle = String(serviceTitle || '').trim();
+    router.push({
+      pathname: '/explore',
+      params: {
+        category: normalizedTitle,
+        keyword: normalizedTitle,
+      },
+    } as any);
+  };
+
   return (
     <View style={styles.container}>
       <ScrollView 
@@ -178,7 +189,7 @@ export default function HomeTab() {
 
         <View style={styles.servicesGrid}>
           {displayServices.slice(0, showAllServices ? undefined : 4).map((svc, idx) => (
-            <TouchableOpacity key={idx} style={styles.serviceBox}>
+            <TouchableOpacity key={idx} style={styles.serviceBox} onPress={() => handlePressService(svc.title)}>
               <Image source={{ uri: svc.img }} style={styles.serviceImage} />
               <View style={styles.serviceDimmer} />
               <Text style={styles.serviceText}>{svc.title}</Text>

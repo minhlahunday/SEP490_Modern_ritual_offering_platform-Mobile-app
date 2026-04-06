@@ -17,6 +17,7 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="vendor/[id]" />
+        <Stack.Screen name="chat/index" />
         <Stack.Screen name="notifications/index" />
         <Stack.Screen name="+not-found" />
       </Stack>

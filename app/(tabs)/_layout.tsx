@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Tabs, usePathname, useRouter } from 'expo-router';
 import { View, Text, TouchableOpacity, StyleSheet, Image, Modal, TextInput, Alert, ActivityIndicator } from 'react-native';
-import { Hop as Home, Compass, User, Bell, ShoppingCart, Wallet, RefreshCw, Plus, X } from 'lucide-react-native';
+import { Hop as Home, Compass, User, Bell, ShoppingCart, Wallet, RefreshCw, Plus, X, MessageCircle } from 'lucide-react-native';
 import { getMyWallet, WalletInfo, createTopupLink } from '../../services/walletService';
 import { getCurrentUser, getProfile } from '../../services/auth';
 import { cartService } from '../../services/cartService';
 import { fetchUnreadNotificationCount } from '../../services/notificationService';
+import AiAssistantWidget from '../../components/AiAssistantWidget';
 
 function HeaderRight() {
   const router = useRouter();
@@ -105,8 +106,8 @@ function HeaderRight() {
   return (
     <View style={styles.headerRightOuter}>
       <View style={styles.headerRightContainer}>
-        {/* Phone Number */}
-        <Text style={styles.phoneText}>1900 8888</Text>
+      
+        
 
         {/* Notification Bell */}
         <TouchableOpacity style={styles.bellButton} onPress={() => router.push('/notifications' as any)}>
@@ -371,22 +372,23 @@ export default function TabLayout() {
   }
 
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: true,
-        headerLeft: () => <HeaderLeft />,
-        headerRight: () => <HeaderRight />,
-        headerTitle: '',
-        tabBarActiveTintColor: '#000', // black
-        tabBarInactiveTintColor: '#94a3b8', // slate-400
-        headerStyle: {
-          backgroundColor: '#ffffff',
-          elevation: 0,
-          shadowOpacity: 0,
-          borderBottomWidth: 1,
-          borderBottomColor: '#f1f5f9', // slate-100
-        },
-      }}>
+    <View style={{ flex: 1 }}>
+      <Tabs
+        screenOptions={{
+          headerShown: true,
+          headerLeft: () => <HeaderLeft />,
+          headerRight: () => <HeaderRight />,
+          headerTitle: '',
+          tabBarActiveTintColor: '#000', // black
+          tabBarInactiveTintColor: '#94a3b8', // slate-400
+          headerStyle: {
+            backgroundColor: '#ffffff',
+            elevation: 0,
+            shadowOpacity: 0,
+            borderBottomWidth: 1,
+            borderBottomColor: '#f1f5f9', // slate-100
+          },
+        }}>
       <Tabs.Screen
         name="index"
         options={{
@@ -431,13 +433,25 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="messages"
+        options={{
+          title: 'Chat',
+          headerShown: false,
+          tabBarIcon: ({ color, size }) => (
+            <MessageCircle color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="profile"
         options={{
           title: 'Cá nhân',
           tabBarIcon: ({ color, size }) => <User color={color} size={size} />,
         }}
       />
-    </Tabs>
+      </Tabs>
+      <AiAssistantWidget />
+    </View>
   );
 }
 

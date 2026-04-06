@@ -1302,10 +1302,11 @@ export async function changePassword(data: ChangePasswordRequest): Promise<{ mes
       throw new Error('Vui lòng đăng nhập để đổi mật khẩu');
     }
 
-    const response = await fetch('/api/auth/change-password', {
+    const response = await fetch(`${API_BASE_URL}/api/auth/change-password`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
         'Authorization': `Bearer ${token}`
       },
       body: JSON.stringify({
@@ -1319,20 +1320,56 @@ export async function changePassword(data: ChangePasswordRequest): Promise<{ mes
     const responseText = await response.text();
     console.log('📥 Response text:', responseText);
 
-    const responseData: ApiResponse<any> = JSON.parse(responseText);
+    let responseData: ApiResponse<any> | null = null;
+    if (responseText) {
+      try {
+        responseData = JSON.parse(responseText) as ApiResponse<any>;
+      } catch {
+        responseData = null;
+      }
+    }
 
-    if (responseData.isSuccess) {
+    if (!response.ok) {
+      let friendlyMessage = 'Đổi mật khẩu không thành công. Vui lòng thử lại.';
+
+      if (responseData?.errorMessages?.length) {
+        friendlyMessage = responseData.errorMessages.join(', ');
+      } else if (response.status === 400) {
+        friendlyMessage = 'Mật khẩu cũ không đúng hoặc mật khẩu mới không hợp lệ.';
+      } else if (response.status === 401 || response.status === 403) {
+        friendlyMessage = 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.';
+      } else if (response.status === 404) {
+        friendlyMessage = 'Không tìm thấy chức năng đổi mật khẩu trên máy chủ.';
+      } else if (response.status >= 500) {
+        friendlyMessage = 'Máy chủ đang bận. Vui lòng thử lại sau.';
+      }
+
+      const isHtmlResponse = /<\s*!doctype\s+html|<\s*html/i.test(responseText || '');
+      if (isHtmlResponse && response.status < 500 && response.status !== 404) {
+        friendlyMessage = 'Hệ thống trả về dữ liệu không hợp lệ. Vui lòng thử lại sau.';
+      }
+
+      console.error('❌ Change Password failed:', {
+        status: response.status,
+        message: friendlyMessage,
+      });
+      throw new Error(friendlyMessage);
+    }
+
+    if (responseData?.isSuccess) {
       const resultMessage = typeof responseData.result === 'string'
         ? responseData.result
         : responseData.result?.message || 'Mật khẩu đã được thay đổi thành công!';
 
       console.log('✅ Change Password successful');
       return { message: resultMessage };
-    } else {
-      const errorMessage = responseData.errorMessages?.join(', ') || 'Đổi mật khẩu không thành công';
-      console.error('❌ Change Password failed:', errorMessage);
-      throw new Error(errorMessage);
     }
+
+    if (responseData?.errorMessages?.length) {
+      throw new Error(responseData.errorMessages.join(', '));
+    }
+
+    throw new Error('Hệ thống trả về dữ liệu không hợp lệ. Vui lòng thử lại sau.');
   } catch (error: any) {
     console.error('❌ Change Password API Error:', error);
     throw error;

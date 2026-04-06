@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Alert, Modal } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Alert, Modal, Image } from 'react-native';
 import { UserProfile, updateProfile, changePassword, logout, getAuthToken } from '../services/auth';
 import { useRouter } from 'expo-router';
-import { Camera, MapPin, Map, CheckCircle2, ChevronDown, User as UserIcon, X, Calendar as CalendarIcon, Phone, History, Lock } from 'lucide-react-native';
+import { Camera, MapPin, Map, CheckCircle2, ChevronDown, User as UserIcon, X, Calendar as CalendarIcon, Phone, History, Lock, Eye, EyeOff } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import toast from '../services/toast';
@@ -62,6 +62,9 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [pwdForm, setPwdForm] = useState({ oldPassword: '', newPassword: '', confirmPassword: '' });
   const [pwdLoading, setPwdLoading] = useState(false);
+  const [showOldPassword, setShowOldPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   interface CustomerAddress {
     addressId?: string | number;
@@ -873,7 +876,12 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
 
           <TouchableOpacity 
             style={[styles.actionBtn, { backgroundColor: '#f9fafb', borderColor: '#e5e7eb' }]}
-            onPress={() => setShowPasswordModal(true)}
+            onPress={() => {
+              setShowOldPassword(false);
+              setShowNewPassword(false);
+              setShowConfirmPassword(false);
+              setShowPasswordModal(true);
+            }}
           >
             <Lock color="#111827" size={18} />
             <Text style={[styles.actionBtnText, { color: '#111827' }]}>Đổi mật khẩu</Text>
@@ -886,35 +894,57 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
             <View style={styles.modalContent}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Đổi mật khẩu</Text>
-                <TouchableOpacity onPress={() => setShowPasswordModal(false)}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setShowOldPassword(false);
+                    setShowNewPassword(false);
+                    setShowConfirmPassword(false);
+                    setShowPasswordModal(false);
+                  }}
+                >
                   <X color="#374151" size={24} />
                 </TouchableOpacity>
               </View>
               
               <View style={{ padding: 16 }}>
                 <Text style={styles.inputLabel}>Mật khẩu cũ</Text>
-                <TextInput 
-                  style={styles.input} 
-                  secureTextEntry 
-                  value={pwdForm.oldPassword} 
-                  onChangeText={(t) => setPwdForm(p => ({...p, oldPassword: t}))} 
-                />
+                <View style={styles.passwordInputWrap}>
+                  <TextInput 
+                    style={styles.passwordInput}
+                    secureTextEntry={!showOldPassword}
+                    value={pwdForm.oldPassword} 
+                    onChangeText={(t) => setPwdForm(p => ({...p, oldPassword: t}))}
+                  />
+                  <TouchableOpacity style={styles.eyeBtn} onPress={() => setShowOldPassword((prev) => !prev)}>
+                    {showOldPassword ? <EyeOff color="#64748b" size={18} /> : <Eye color="#64748b" size={18} />}
+                  </TouchableOpacity>
+                </View>
                 
                 <Text style={styles.inputLabel}>Mật khẩu mới</Text>
-                <TextInput 
-                  style={styles.input} 
-                  secureTextEntry 
-                  value={pwdForm.newPassword} 
-                  onChangeText={(t) => setPwdForm(p => ({...p, newPassword: t}))} 
-                />
+                <View style={styles.passwordInputWrap}>
+                  <TextInput 
+                    style={styles.passwordInput}
+                    secureTextEntry={!showNewPassword}
+                    value={pwdForm.newPassword} 
+                    onChangeText={(t) => setPwdForm(p => ({...p, newPassword: t}))}
+                  />
+                  <TouchableOpacity style={styles.eyeBtn} onPress={() => setShowNewPassword((prev) => !prev)}>
+                    {showNewPassword ? <EyeOff color="#64748b" size={18} /> : <Eye color="#64748b" size={18} />}
+                  </TouchableOpacity>
+                </View>
                 
                 <Text style={styles.inputLabel}>Xác nhận mật khẩu mới</Text>
-                <TextInput 
-                  style={styles.input} 
-                  secureTextEntry 
-                  value={pwdForm.confirmPassword} 
-                  onChangeText={(t) => setPwdForm(p => ({...p, confirmPassword: t}))} 
-                />
+                <View style={styles.passwordInputWrap}>
+                  <TextInput 
+                    style={styles.passwordInput}
+                    secureTextEntry={!showConfirmPassword}
+                    value={pwdForm.confirmPassword} 
+                    onChangeText={(t) => setPwdForm(p => ({...p, confirmPassword: t}))}
+                  />
+                  <TouchableOpacity style={styles.eyeBtn} onPress={() => setShowConfirmPassword((prev) => !prev)}>
+                    {showConfirmPassword ? <EyeOff color="#64748b" size={18} /> : <Eye color="#64748b" size={18} />}
+                  </TouchableOpacity>
+                </View>
 
                 <TouchableOpacity 
                   style={styles.submitBtn} 
@@ -941,7 +971,7 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
       <View style={styles.avatarEditContainer}>
         <TouchableOpacity style={styles.avatarPlaceholder} onPress={handlePickImage}>
           {avatarPreview ? (
-            <Text style={{color: '#000', fontWeight: 'bold'}}>Đã chọn ảnh mới</Text>
+            <Image source={{ uri: avatarPreview }} style={styles.avatarPreviewImage} />
           ) : (
             <>
               <Camera color="#9ca3af" size={32} />
@@ -1309,6 +1339,11 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
     justifyContent: 'center',
     alignItems: 'center',
+    overflow: 'hidden',
+  },
+  avatarPreviewImage: {
+    width: '100%',
+    height: '100%',
   },
   inputGroup: {
     marginBottom: 16,
@@ -1331,6 +1366,26 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 16,
     color: '#111827',
+  },
+  passwordInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 8,
+    paddingRight: 10,
+    marginBottom: 12,
+  },
+  passwordInput: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: '#111827',
+  },
+  eyeBtn: {
+    padding: 6,
   },
   genderRow: {
     flexDirection: 'row',

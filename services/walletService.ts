@@ -13,6 +13,8 @@ export interface WalletTransaction {
   status: string;
   createdAt: string;
   walletType?: string;
+  relatedTransactionId?: string | null;
+  relatedTransactions?: WalletTransaction[];
   raw?: any;
 }
 
@@ -21,6 +23,7 @@ export interface TransactionFilter {
   status?: string;
   from?: string;
   to?: string;
+  walletType?: WalletType;
 }
 
 export type WalletType = 'Customer' | 'Vendor' | 'System';
@@ -56,6 +59,87 @@ class WalletService {
       if (Number.isFinite(parsed)) return parsed;
     }
     return fallback;
+  }
+
+  private readField<T>(source: Record<string, unknown>, keys: string[], fallback: T): T {
+    for (const key of keys) {
+      const value = source[key];
+      if (value !== undefined && value !== null) {
+        return value as T;
+      }
+    }
+    return fallback;
+  }
+
+  private unwrapResultArray(payload: unknown): unknown[] {
+    if (Array.isArray(payload)) return payload;
+
+    if (payload && typeof payload === 'object') {
+      const envelope = payload as Record<string, unknown>;
+      const result = envelope.result;
+
+      if (Array.isArray(result)) return result;
+
+      if (result && typeof result === 'object') {
+        const resultObject = result as Record<string, unknown>;
+        const nestedArray = resultObject.items ?? resultObject.data ?? resultObject.records;
+        if (Array.isArray(nestedArray)) return nestedArray;
+      }
+    }
+
+    return [];
+  }
+
+  private normalizeTransactionItem(item: unknown, index: number): WalletTransaction {
+    const source = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+    const tx = (source.transaction || source.Transaction || source) as Record<string, unknown>;
+
+    const id = String(this.readField(tx, ['transactionId', 'TransactionId', 'id', 'Id'], `TX-${index + 1}`));
+    const type = String(this.readField(tx, ['type', 'Type', 'transactionType', 'TransactionType'], ''));
+    const status = String(this.readField(tx, ['status', 'Status'], ''));
+
+    const amountRaw = this.readField(tx, ['amount', 'Amount', 'value', 'Value'], 0);
+    const amount = this.toNumber(amountRaw, 0);
+
+    const description = String(this.readField(tx, ['description', 'Description', 'note', 'Note'], ''));
+    const createdAt = String(
+      this.readField(
+        tx,
+        ['createdAt', 'CreatedAt', 'createdDate', 'CreatedDate', 'timestamp', 'Timestamp'],
+        ''
+      )
+    );
+
+    const walletId = String(this.readField(tx, ['walletId', 'WalletId'], '') || this.readField(source, ['walletId', 'WalletId'], ''));
+    const walletType = String(this.readField(tx, ['walletType', 'WalletType'], '') || this.readField(source, ['walletType', 'WalletType'], ''));
+
+    const balanceBeforeRaw = this.readField(tx, ['balanceBefore', 'BalanceBefore'], 0);
+    const balanceAfterRaw = this.readField(tx, ['balanceAfter', 'BalanceAfter'], 0);
+
+    return {
+      id,
+      type,
+      status,
+      amount,
+      description,
+      createdAt,
+      walletId: walletId || '',
+      walletType: walletType || undefined,
+      balanceBefore: this.toNumber(balanceBeforeRaw, 0),
+      balanceAfter: this.toNumber(balanceAfterRaw, 0),
+      relatedTransactionId: String(this.readField(tx, ['relatedTransactionId', 'RelatedTransactionId'], '') || '') || null,
+      relatedTransactions: Array.isArray(tx.relatedTransactions || tx.RelatedTransactions)
+        ? ((tx.relatedTransactions || tx.RelatedTransactions) as unknown[]).map((rt, i) => this.normalizeTransactionItem(rt, i))
+        : undefined,
+      raw: source,
+    };
+  }
+
+  private extractMainResult(payload: any): any {
+    if (payload && typeof payload === 'object' && 'result' in payload) {
+      return payload.result;
+    }
+    return payload;
   }
 
   private normalizeWallet(raw: any, requestedType: WalletType): WalletInfo {
@@ -137,26 +221,28 @@ class WalletService {
 
   async getMyTransactions(filter?: TransactionFilter): Promise<WalletTransaction[]> {
     try {
-      const queryParams = new URLSearchParams();
-      if (filter?.type) queryParams.append('type', filter.type);
-      if (filter?.status) queryParams.append('status', filter.status);
-      if (filter?.from) queryParams.append('from', filter.from);
-      if (filter?.to) queryParams.append('to', filter.to);
+      const params = new URLSearchParams();
+      params.append('ActiveRole', this.resolveActiveRole(filter?.walletType));
+      if (filter?.type && filter.type.trim()) params.append('Type', filter.type.trim());
+      if (filter?.status && filter.status.trim()) params.append('Status', filter.status.trim());
+      if (filter?.from && filter.from.trim()) params.append('From', filter.from.trim());
+      if (filter?.to && filter.to.trim()) params.append('To', filter.to.trim());
+      params.append('PageNumber', '1');
+      params.append('PageSize', '100');
 
-      const queryString = queryParams.toString();
-      const suffix = queryString ? `?${queryString}` : '';
-      
+      const suffix = `?${params.toString()}`;
+
       const endpoints = [
-        `${API_BASE_URL}/api/wallets/me/transactions`,
-        `${API_BASE_URL}/api/wallets/my-transactions`,
-        `${API_BASE_URL}/wallets/me/transactions`,
-        `${API_BASE_URL}/wallets/my-transactions`,
+        `${API_BASE_URL}/transactions/me${suffix}`,
+        `${API_BASE_URL}/api/transactions/me${suffix}`,
+        `${API_BASE_URL}/api/wallets/me/transactions${suffix}`,
+        `${API_BASE_URL}/wallets/me/transactions${suffix}`,
       ];
 
       let response;
       for (const url of endpoints) {
         try {
-          response = await fetch(url + suffix, { method: 'GET', headers: this.getHeaders() });
+          response = await fetch(url, { method: 'GET', headers: this.getHeaders() });
           if (response.ok) break;
         } catch (e) { /* continue */ }
       }
@@ -170,11 +256,20 @@ class WalletService {
         throw new Error(`HTTP error! status: ${response?.status || 'unknown'}`);
       }
 
-      const data: ApiResponse<WalletTransaction[]> = await response.json();
-      if (data.isSuccess) {
-        return data.result || [];
+      const payload = await response.json().catch(() => null);
+      if (payload && typeof payload === 'object') {
+        const envelope = payload as Record<string, unknown>;
+        if (envelope.isSuccess === false || envelope.isSucceeded === false) {
+          const messages = Array.isArray(envelope.errorMessages)
+            ? envelope.errorMessages.filter((m): m is string => typeof m === 'string')
+            : [];
+          const message = messages.join(', ') || String(envelope.message || 'Không thể tải lịch sử giao dịch');
+          throw new Error(message);
+        }
       }
-      return [];
+
+      const items = this.unwrapResultArray(payload);
+      return items.map((item, index) => this.normalizeTransactionItem(item, index));
     } catch (error) {
       console.error('❌ Failed to fetch wallet transactions:', error);
       throw error;
@@ -183,27 +278,44 @@ class WalletService {
 
   async getTransactionById(id: string): Promise<WalletTransaction> {
     try {
-      let response = await fetch(`${API_BASE_URL}/api/wallets/transactions/${id}`, {
-        method: 'GET',
-        headers: this.getHeaders(),
-      });
+      const safeId = encodeURIComponent(id);
+      const role = this.resolveActiveRole('Customer');
 
-      if (response.status === 404) {
-        response = await fetch(`${API_BASE_URL}/wallets/transactions/${id}`, {
-          method: 'GET',
-          headers: this.getHeaders(),
-        });
+      const endpoints = [
+        `${API_BASE_URL}/transactions/${safeId}?ActiveRole=${encodeURIComponent(role)}`,
+        `${API_BASE_URL}/api/transactions/${safeId}?ActiveRole=${encodeURIComponent(role)}`,
+        `${API_BASE_URL}/api/wallets/transactions/${safeId}`,
+        `${API_BASE_URL}/wallets/transactions/${safeId}`,
+      ];
+
+      let response;
+      for (const url of endpoints) {
+        try {
+          response = await fetch(url, { method: 'GET', headers: this.getHeaders() });
+          if (response.ok) break;
+        } catch (e) {
+          // try next endpoint
+        }
       }
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      const data: ApiResponse<WalletTransaction> = await response.json();
-      if (data.isSuccess) {
-        return data.result;
+      const payload = await response.json().catch(() => null);
+      if (payload && typeof payload === 'object') {
+        const envelope = payload as Record<string, unknown>;
+        if (envelope.isSuccess === false || envelope.isSucceeded === false) {
+          const messages = Array.isArray(envelope.errorMessages)
+            ? envelope.errorMessages.filter((m): m is string => typeof m === 'string')
+            : [];
+          const message = messages.join(', ') || String(envelope.message || 'Không thể lấy thông tin giao dịch');
+          throw new Error(message);
+        }
       }
-      throw new Error(data.errorMessages?.[0] || 'Không thể lấy thông tin giao dịch');
+
+      const main = this.extractMainResult(payload);
+      return this.normalizeTransactionItem(main, 0);
     } catch (error) {
       console.error('❌ Failed to fetch transaction detail:', error);
       throw error;
