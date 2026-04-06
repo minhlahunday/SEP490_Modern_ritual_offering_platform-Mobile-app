@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
+  Image,
   Platform,
   StyleSheet,
   Text,
@@ -31,7 +32,7 @@ export default function ChatScreen() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [vendorNameMap, setVendorNameMap] = useState<Record<string, string>>({});
+  const [vendorMetaMap, setVendorMetaMap] = useState<Record<string, { name: string; avatar?: string }>>({});
 
   const pollRef = useRef<any>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
@@ -43,8 +44,9 @@ export default function ChatScreen() {
 
   const activeVendorId = String(activeSession?.vendorId || '').trim();
   const activeVendorName = activeVendorId
-    ? (vendorNameMap[activeVendorId] || `Cua hang #${activeVendorId.slice(-4) || '...'}`)
-    : 'Tin nhan';
+    ? (vendorMetaMap[activeVendorId]?.name || `Cua hang #${activeVendorId.slice(-4) || '...'}`)
+    : 'Tin nhắn';
+  const activeVendorAvatar = activeVendorId ? String(vendorMetaMap[activeVendorId]?.avatar || '').trim() : '';
 
   const filteredSessions = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase();
@@ -52,11 +54,11 @@ export default function ChatScreen() {
 
     return sessions.filter((session) => {
       const vendorId = String(session.vendorId || '').trim();
-      const name = String(vendorNameMap[vendorId] || `Shop #${vendorId.slice(-4)}`).toLowerCase();
+      const name = String(vendorMetaMap[vendorId]?.name || `Shop #${vendorId.slice(-4)}`).toLowerCase();
       const lastMsg = String(session.messages?.[session.messages.length - 1]?.content || '').toLowerCase();
       return name.includes(keyword) || lastMsg.includes(keyword);
     });
-  }, [sessions, searchQuery, vendorNameMap]);
+  }, [sessions, searchQuery, vendorMetaMap]);
 
   const sortedMessages = useMemo(() => {
     return [...messages].sort((a, b) => {
@@ -66,20 +68,40 @@ export default function ChatScreen() {
     });
   }, [messages]);
 
-  const loadVendorNames = async (sessionList: ChatSession[]) => {
+  const loadVendorMeta = async (sessionList: ChatSession[]) => {
     const ids = Array.from(new Set(sessionList.map((s) => String(s.vendorId || '').trim()).filter(Boolean)));
-    const nextMap: Record<string, string> = {};
+    const nextMap: Record<string, { name: string; avatar?: string }> = {};
+
+    sessionList.forEach((session) => {
+      const id = String(session.vendorId || '').trim();
+      if (!id) return;
+
+      const sessionName = String(session.counterPartyName || '').trim();
+      const sessionAvatar = String(session.counterPartyAvatar || '').trim();
+      nextMap[id] = {
+        name: sessionName || `Cua hang #${id.slice(-4)}`,
+        avatar: sessionAvatar || undefined,
+      };
+    });
 
     await Promise.all(ids.map(async (id) => {
       try {
         const vendor = await vendorService.getVendorCached(id);
-        nextMap[id] = vendor?.shopName || `Cua hang #${id.slice(-4)}`;
+        const current = nextMap[id] || { name: `Cua hang #${id.slice(-4)}` };
+        const vendorName = String(vendor?.shopName || '').trim();
+        const vendorAvatar = String(vendor?.shopAvatarUrl || vendor?.avatarUrl || '').trim();
+        nextMap[id] = {
+          name: vendorName || current.name,
+          avatar: vendorAvatar || current.avatar,
+        };
       } catch {
-        nextMap[id] = `Cua hang #${id.slice(-4)}`;
+        if (!nextMap[id]) {
+          nextMap[id] = { name: `Cua hang #${id.slice(-4)}` };
+        }
       }
     }));
 
-    setVendorNameMap((prev) => ({ ...prev, ...nextMap }));
+    setVendorMetaMap((prev) => ({ ...prev, ...nextMap }));
   };
 
   const applySession = async (sessionId: string) => {
@@ -90,7 +112,7 @@ export default function ChatScreen() {
       setMessages(Array.isArray(details.messages) ? details.messages : []);
       vendorChatService.markAsRead(details.sessionId).catch(() => null);
     } catch (error: any) {
-      toast.error(error?.message || 'Khong the tai tin nhan');
+      toast.error(error?.message || 'Không thể tải cuộc trò chuyện');
     } finally {
       setLoadingMessages(false);
     }
@@ -99,7 +121,7 @@ export default function ChatScreen() {
   const bootstrap = async () => {
     const user = getCurrentUser();
     if (!user) {
-      toast.warning('Vui long dang nhap de nhan tin');
+      toast.warning('Vui lòng đăng nhập để sử dụng tính năng này');
       router.replace('/login' as any);
       return;
     }
@@ -136,7 +158,7 @@ export default function ChatScreen() {
       }
 
       setSessions(sessionList);
-      loadVendorNames(sessionList).catch(() => null);
+      loadVendorMeta(sessionList).catch(() => null);
 
       if (nextSessionId) {
         await applySession(nextSessionId);
@@ -203,7 +225,7 @@ export default function ChatScreen() {
         )));
       }
     } catch (error: any) {
-      toast.error(error?.message || 'Khong the gui tin nhan');
+      toast.error(error?.message || 'Không thể gửi tin nhắn');
       setNewMessage(content);
     } finally {
       setSending(false);
@@ -228,17 +250,22 @@ export default function ChatScreen() {
 
   const renderSessionItem = ({ item }: { item: ChatSession }) => {
     const vendorId = String(item.vendorId || '').trim();
-    const name = vendorNameMap[vendorId] || `Shop #${vendorId.slice(-4) || '...'}`;
+    const name = vendorMetaMap[vendorId]?.name || `Shop #${vendorId.slice(-4) || '...'}`;
+    const avatar = String(vendorMetaMap[vendorId]?.avatar || '').trim();
     const lastMsg = item.messages?.[item.messages.length - 1];
     const timeText = lastMsg?.timestamp
       ? new Date(lastMsg.timestamp).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
       : '';
-    const preview = String(lastMsg?.content || 'Chua co tin nhan');
+    const preview = String(lastMsg?.content || 'Chưa có tin nhắn');
 
     return (
       <TouchableOpacity style={styles.sessionRow} onPress={() => applySession(item.sessionId)}>
         <View style={styles.sessionAvatar}>
-          <Text style={styles.sessionAvatarText}>{name.charAt(0).toUpperCase()}</Text>
+          {avatar ? (
+            <Image source={{ uri: avatar }} style={styles.sessionAvatarImage} />
+          ) : (
+            <Text style={styles.sessionAvatarText}>{name.charAt(0).toUpperCase()}</Text>
+          )}
         </View>
         <View style={styles.sessionMeta}>
           <Text style={styles.sessionName} numberOfLines={1}>{name}</Text>
@@ -276,8 +303,26 @@ export default function ChatScreen() {
           <ChevronLeft size={22} color="#0f172a" />
         </TouchableOpacity>
         <View style={styles.headerTitleWrap}>
-          <Text style={styles.headerTitle} numberOfLines={1}>{activeSession ? activeVendorName : 'Tin nhan'}</Text>
-          <Text style={styles.headerSub}>{activeSession ? 'Ho tro khach hang' : 'Quan ly hoi thoai'}</Text>
+          {activeSession ? (
+            <View style={styles.headerActiveWrap}>
+              <View style={styles.headerActiveAvatar}>
+                {activeVendorAvatar ? (
+                  <Image source={{ uri: activeVendorAvatar }} style={styles.headerActiveAvatarImage} />
+                ) : (
+                  <Text style={styles.headerActiveAvatarText}>{activeVendorName.charAt(0).toUpperCase()}</Text>
+                )}
+              </View>
+              <View style={styles.headerActiveMeta}>
+                <Text style={styles.headerTitle} numberOfLines={1}>{activeVendorName}</Text>
+                <Text style={styles.headerSub}>Hỗ trợ khách hàng</Text>
+              </View>
+            </View>
+          ) : (
+            <>
+              <Text style={styles.headerTitle} numberOfLines={1}>Tin nhắn</Text>
+              <Text style={styles.headerSub}>Quản lý trò chuyện</Text>
+            </>
+          )}
         </View>
       </View>
 
@@ -303,7 +348,7 @@ export default function ChatScreen() {
               style={styles.input}
               value={newMessage}
               onChangeText={setNewMessage}
-              placeholder="Nhap tin nhan..."
+              placeholder="Nhập tin nhắn..."
               placeholderTextColor="#94a3b8"
             />
             <TouchableOpacity
@@ -321,7 +366,7 @@ export default function ChatScreen() {
             <Search size={16} color="#94a3b8" />
             <TextInput
               style={styles.searchInput}
-              placeholder="Tim cuoc tro chuyen..."
+              placeholder="Tìm kiếm cuộc trò chuyện..."
               value={searchQuery}
               onChangeText={setSearchQuery}
               placeholderTextColor="#94a3b8"
@@ -365,6 +410,19 @@ const styles = StyleSheet.create({
   },
   backBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   headerTitleWrap: { flex: 1 },
+  headerActiveWrap: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  headerActiveAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerActiveAvatarImage: { width: '100%', height: '100%' },
+  headerActiveAvatarText: { fontSize: 14, fontWeight: '800', color: '#334155' },
+  headerActiveMeta: { flex: 1, minWidth: 0 },
   headerTitle: { fontSize: 16, fontWeight: '800', color: '#0f172a' },
   headerSub: { fontSize: 11, color: '#64748b', marginTop: 2 },
 
@@ -405,10 +463,12 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 21,
+    overflow: 'hidden',
     backgroundColor: '#e2e8f0',
     alignItems: 'center',
     justifyContent: 'center',
   },
+  sessionAvatarImage: { width: '100%', height: '100%' },
   sessionAvatarText: { fontSize: 16, fontWeight: '800', color: '#334155' },
   sessionMeta: { flex: 1, minWidth: 0 },
   sessionName: { fontSize: 14, fontWeight: '800', color: '#0f172a' },

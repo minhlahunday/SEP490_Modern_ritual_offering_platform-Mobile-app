@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Tabs, usePathname, useRouter } from 'expo-router';
-import { View, Text, TouchableOpacity, StyleSheet, Image, Modal, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image, Modal, TextInput, Alert, ActivityIndicator, Platform } from 'react-native';
 import { Hop as Home, Compass, User, Bell, ShoppingCart, Wallet, RefreshCw, Plus, X, MessageCircle } from 'lucide-react-native';
 import { getMyWallet, WalletInfo, createTopupLink } from '../../services/walletService';
 import { getCurrentUser, getProfile } from '../../services/auth';
 import { cartService } from '../../services/cartService';
 import { fetchUnreadNotificationCount } from '../../services/notificationService';
 import AiAssistantWidget from '../../components/AiAssistantWidget';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 function HeaderRight() {
   const router = useRouter();
@@ -228,11 +229,13 @@ function HeaderRight() {
 function HeaderLeft() {
   return (
     <View style={styles.headerLeftContainer}>
-      <Image
-        source={require('@/assets/images/logo.png')}
-        style={styles.logoHeader}
-        resizeMode="contain"
-      />
+      <View style={styles.logoCircle}>
+        <Image
+          source={require('@/assets/images/logo.png')}
+          style={styles.logoHeader}
+          resizeMode="cover"
+        />
+      </View>
     </View>
   );
 }
@@ -240,6 +243,7 @@ function HeaderLeft() {
 export default function TabLayout() {
   const router = useRouter();
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
   const [cartCount, setCartCount] = useState<number>(0);
   const [gateChecking, setGateChecking] = useState(true);
   const [profileBlocked, setProfileBlocked] = useState(false);
@@ -379,10 +383,19 @@ export default function TabLayout() {
           headerLeft: () => <HeaderLeft />,
           headerRight: () => <HeaderRight />,
           headerTitle: '',
+          headerLeftContainerStyle: {
+            paddingLeft: 6,
+            marginLeft: 0,
+          },
+          headerRightContainerStyle: {
+            paddingRight: 8,
+          },
+          headerStatusBarHeight: Platform.OS === 'ios' ? insets.top : undefined,
           tabBarActiveTintColor: '#000', // black
           tabBarInactiveTintColor: '#94a3b8', // slate-400
           headerStyle: {
             backgroundColor: '#ffffff',
+            height: Platform.OS === 'ios' ? insets.top + 64 : 70,
             elevation: 0,
             shadowOpacity: 0,
             borderBottomWidth: 1,
@@ -475,7 +488,8 @@ const styles = StyleSheet.create({
   headerRightContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingRight: 16,
+    paddingRight: 8,
+    paddingVertical: 2,
     gap: 12,
   },
   phoneText: {
@@ -485,9 +499,9 @@ const styles = StyleSheet.create({
     marginRight: 4,
   },
   bellButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#f1f5f9',
@@ -515,8 +529,8 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   walletIconButton: {
-    width: 40,
-    height: 40,
+    width: 38,
+    height: 38,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#000',
@@ -605,12 +619,23 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   headerLeftContainer: {
-    paddingLeft: 12,
-    paddingVertical: 4,
+    paddingLeft: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    justifyContent: 'center',
+  },
+  logoCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    overflow: 'hidden',
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
   },
   logoHeader: {
-    width: 148,
-    height: 52,
+    width: '100%',
+    height: '100%',
   },
   modalOverlay: {
     flex: 1,

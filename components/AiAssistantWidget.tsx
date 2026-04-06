@@ -184,8 +184,8 @@ export default function AiAssistantWidget() {
               <View style={styles.headerLeft}>
                 <Sparkles size={16} color="#fff" />
                 <View>
-                  <Text style={styles.headerTitle}>Tro ly Ritual AI</Text>
-                  <Text style={styles.headerSub}>Tu van nghiem tuc, goi y nhanh</Text>
+                  <Text style={styles.headerTitle}>Trợ lý Ritual AI</Text>
+                  <Text style={styles.headerSub}>Tư vấn nghiêm túc, gợi ý nhanh</Text>
                 </View>
               </View>
               <TouchableOpacity style={styles.closeBtn} onPress={() => { void closeAssistant(); }}>
@@ -196,13 +196,13 @@ export default function AiAssistantWidget() {
             <ScrollView ref={scrollRef} style={styles.messagesWrap} contentContainerStyle={styles.messagesContent}>
               {messages.length === 0 && !isInitializing && (
                 <View style={styles.welcomeBox}>
-                  <Text style={styles.welcomeText}>Chao ban, minh co the giup gi cho nghi le cua gia dinh minh?</Text>
+                  <Text style={styles.welcomeText}>Chào bạn, mình có thể giúp gì cho bạn?</Text>
                   <View style={styles.quickRow}>
                     <TouchableOpacity style={styles.quickBtn} onPress={() => handleQuickQuestion('Can chuan bi gi cho cung day thang?')}>
-                      <Text style={styles.quickText}>Cung day thang</Text>
+                      <Text style={styles.quickText}>Cúng đầy tháng</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={styles.quickBtn} onPress={() => handleQuickQuestion('Huong dat mam cung tan gia?')}>
-                      <Text style={styles.quickText}>Cung tan gia</Text>
+                      <Text style={styles.quickText}>Cúng tân gia</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
