@@ -36,6 +36,32 @@ export interface UpdateCartItemRequest {
 }
 
 class CartService {
+    private async postAddToCart(request: AddToCartRequest): Promise<Response> {
+      let response = await fetch(`${API_BASE_URL}/cart/add`, {
+        method: 'POST',
+        headers: this.getHeaders('POST'),
+        body: JSON.stringify(request),
+      });
+
+      if (response.status === 405 || response.status === 404) {
+        response = await fetch(`${API_BASE_URL}/cart`, {
+          method: 'POST',
+          headers: this.getHeaders('POST'),
+          body: JSON.stringify(request),
+        });
+      }
+
+      if (response.status === 405 || response.status === 404) {
+        response = await fetch(`${API_BASE_URL}/cart/items`, {
+          method: 'POST',
+          headers: this.getHeaders('POST'),
+          body: JSON.stringify(request),
+        });
+      }
+
+      return response;
+    }
+
   private getHeaders(method: string = 'GET'): HeadersInit {
     const token = getAuthToken();
     const headers: Record<string, string> = {
@@ -111,6 +137,23 @@ class CartService {
   }
 
   private mapCartItem(item: any): CartItemApi {
+    const imageUrl =
+      item.imageUrl
+      || item.packageAvatarUrl
+      || item.packageImageUrl
+      || item.productImageUrl
+      || item.avatarUrl
+      || item.thumbnailUrl
+      || item.image
+      || item.package?.avatarUrl
+      || item.package?.imageUrl
+      || item.package?.image
+      || item.package?.thumbnailUrl
+      || item.product?.imageUrl
+      || item.product?.avatarUrl
+      || item.product?.thumbnailUrl
+      || null;
+
     return {
       cartItemId: item.cartItemId || item.id || 0,
       cartId: item.cartId || 0,
@@ -120,7 +163,7 @@ class CartService {
       price: item.price || 0,
       packageName: item.packageName || item.name || 'Sản phẩm',
       variantName: item.variantName || 'Mặc định',
-      imageUrl: item.imageUrl || item.packageAvatarUrl || item.packageImageUrl || null
+      imageUrl
     };
   }
 
@@ -165,12 +208,7 @@ class CartService {
     try {
       console.log('➕ Adding to cart:', request);
 
-      // Backend OpenAPI: only POST /api/cart/add (GET is /api/cart; /api/cart/items is PUT/DELETE only).
-      let response = await fetch(`${API_BASE_URL}/cart/add`, {
-        method: 'POST',
-        headers: this.getHeaders('POST'),
-        body: JSON.stringify(request),
-      });
+      const response = await this.postAddToCart(request);
 
       if (!response.ok) {
         let errorData: any = {};
@@ -192,6 +230,47 @@ class CartService {
     }
   }
 
+  async addToCartAndResolveItemId(request: AddToCartRequest): Promise<number | null> {
+    try {
+      const response = await this.postAddToCart(request);
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        let errorData: any = {};
+        try {
+          if (errorText) errorData = JSON.parse(errorText);
+        } catch {
+          // keep default
+        }
+        throw new Error(errorData?.errorMessages?.[0] || `Thêm vào giỏ hàng thất bại (Lỗi ${response.status})`);
+      }
+
+      const data = await response.json().catch(() => ({}));
+      const payload = data?.result ?? data;
+
+      const directId =
+        Number(payload?.cartItemId) ||
+        Number(payload?.itemId) ||
+        Number(payload?.id) ||
+        Number(payload?.cartItem?.cartItemId);
+
+      if (Number.isInteger(directId) && directId > 0) {
+        return directId;
+      }
+
+      // Fallback: refetch cart and resolve by variantId.
+      const cart = await this.getCart();
+      const matchedItems = (cart?.cartItems || []).filter((item) => Number(item.variantId) === Number(request.variantId));
+      if (matchedItems.length === 0) return null;
+
+      const resolved = [...matchedItems].sort((a, b) => Number(b.cartItemId) - Number(a.cartItemId))[0];
+      return Number.isInteger(resolved?.cartItemId) ? resolved.cartItemId : null;
+    } catch (error) {
+      console.error('❌ Failed to add cart item and resolve id:', error);
+      throw error;
+    }
+  }
+
   /**
    * Cập nhật số lượng item
    */
@@ -208,6 +287,17 @@ class CartService {
           quantity: request.quantity,
         }),
       });
+
+      if (response.status === 405 || response.status === 404) {
+        response = await fetch(`${API_BASE_URL}/cart`, {
+          method: 'PUT',
+          headers: this.getHeaders('PUT'),
+          body: JSON.stringify({
+            cartItemId: request.cartItemId,
+            quantity: request.quantity,
+          }),
+        });
+      }
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -235,6 +325,27 @@ class CartService {
         headers: this.getHeaders('DELETE'),
       });
 
+      if (response.status === 405 || response.status === 404) {
+        response = await fetch(`${API_BASE_URL}/cart/items/${cartItemId}`, {
+          method: 'DELETE',
+          headers: this.getHeaders('DELETE'),
+        });
+      }
+
+      if (response.status === 405 || response.status === 404) {
+        response = await fetch(`${API_BASE_URL}/cart/${cartItemId}`, {
+          method: 'DELETE',
+          headers: this.getHeaders('DELETE'),
+        });
+      }
+
+      if (response.status === 405 || response.status === 404) {
+        response = await fetch(`${API_BASE_URL}/cart?itemId=${encodeURIComponent(String(cartItemId))}`, {
+          method: 'DELETE',
+          headers: this.getHeaders('DELETE'),
+        });
+      }
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -259,6 +370,27 @@ class CartService {
         method: 'DELETE',
         headers: this.getHeaders('DELETE'),
       });
+
+      if (response.status === 405 || response.status === 404) {
+        response = await fetch(`${API_BASE_URL}/cart/items/clear`, {
+          method: 'DELETE',
+          headers: this.getHeaders('DELETE'),
+        });
+      }
+
+      if (response.status === 405 || response.status === 404) {
+        response = await fetch(`${API_BASE_URL}/cart/clear`, {
+          method: 'POST',
+          headers: this.getHeaders('POST'),
+        });
+      }
+
+      if (response.status === 405 || response.status === 404) {
+        response = await fetch(`${API_BASE_URL}/cart/items`, {
+          method: 'DELETE',
+          headers: this.getHeaders('DELETE'),
+        });
+      }
 
       return response.ok;
     } catch (error) {

@@ -8,17 +8,17 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
-  SafeAreaView,
   RefreshControl,
   Dimensions
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
 import { cartService, CartApi, CartItemApi } from '@/services/cartService';
 import { checkoutService, CheckoutSummary } from '@/services/checkoutService';
 import { getCurrentUser } from '@/services/auth';
 import toast from '@/services/toast';
-import { ShoppingBag, Trash2, Plus, Minus, ChevronRight, Info } from 'lucide-react-native';
+import { ShoppingBag, Trash2, Plus, Minus, ChevronRight, Info, CheckCircle2, Circle } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
 const { width } = Dimensions.get('window');
@@ -32,6 +32,7 @@ export default function CartScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [updating, setUpdating] = useState<number | null>(null);
+  const [selectedItems, setSelectedItems] = useState<Set<number>>(new Set());
 
   const fetchCartData = useCallback(async (showLoading = true) => {
     const user = getCurrentUser();
@@ -78,9 +79,58 @@ export default function CartScreen() {
     }
   }, [isFocused, fetchCartData]);
 
+  const [selectedCheckoutSummary, setSelectedCheckoutSummary] = useState<CheckoutSummary | null>(null);
+  const [loadingSelectedSummary, setLoadingSelectedSummary] = useState(false);
+
+  // Fetch checkout summary for selected items whenever selection changes
+  useEffect(() => {
+    const fetchSelectedSummary = async () => {
+      if (selectedItems.size === 0) {
+        setSelectedCheckoutSummary(null);
+        return;
+      }
+
+      const selectedIds = Array.from(selectedItems);
+      try {
+        setLoadingSelectedSummary(true);
+        const summary = await checkoutService.getSummary(selectedIds);
+        setSelectedCheckoutSummary(summary);
+      } catch (error) {
+        console.warn('⚠️ Failed to fetch selected summary:', error);
+      } finally {
+        setLoadingSelectedSummary(false);
+      }
+    };
+
+    fetchSelectedSummary();
+  }, [selectedItems]);
+
   const onRefresh = () => {
     setRefreshing(true);
     fetchCartData(false);
+  };
+
+  const toggleItemSelection = (cartItemId: number) => {
+    setSelectedItems(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(cartItemId)) {
+        newSet.delete(cartItemId);
+      } else {
+        newSet.add(cartItemId);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    const cartItems = cart?.cartItems || [];
+    if (selectedItems.size === cartItems.length) {
+      // Deselect all
+      setSelectedItems(new Set());
+    } else {
+      // Select all
+      setSelectedItems(new Set(cartItems.map(item => item.cartItemId)));
+    }
   };
 
   const handleUpdateQuantity = async (cartItemId: number, newQuantity: number) => {
@@ -167,10 +217,22 @@ export default function CartScreen() {
 
   const renderCartItem = (item: CartItemApi) => {
     const isItemUpdating = updating === item.cartItemId;
+    const isSelected = selectedItems.has(item.cartItemId);
 
     return (
       <View key={item.cartItemId} style={styles.card}>
         <View style={styles.itemContainer}>
+          <TouchableOpacity 
+            style={styles.checkboxContainer}
+            onPress={() => toggleItemSelection(item.cartItemId)}
+          >
+            {isSelected ? (
+              <CheckCircle2 size={24} color="#000" />
+            ) : (
+              <Circle size={24} color="#cbd5e1" />
+            )}
+          </TouchableOpacity>
+
           <Image
             source={item.imageUrl ? { uri: item.imageUrl } : require('@/assets/images/logo.png')}
             style={styles.itemImage}
@@ -231,16 +293,22 @@ export default function CartScreen() {
   }
 
   const cartItems = cart?.cartItems || [];
-  const subtotal = checkoutSummary?.subTotal || cart?.subtotal || 0;
-  const shippingFromVendors = Array.isArray(checkoutSummary?.vendorOrders)
-    ? checkoutSummary!.vendorOrders!.reduce((sum, vendor) => sum + Number(vendor?.shippingFee || 0), 0)
-    : 0;
-  const shipping = checkoutSummary?.shippingFee ?? shippingFromVendors;
-  const discount = checkoutSummary?.totalDiscount || 0;
-  const total = checkoutSummary?.totalAmount ?? (subtotal + shipping - discount);
+  
+  // Use selected summary if items are selected, otherwise use full summary
+  const activeSummary = selectedItems.size > 0 ? selectedCheckoutSummary : checkoutSummary;
+  
+  const subtotal = selectedItems.size === 0 ? 0 : (activeSummary?.subTotal || 0);
+  const shippingFromVendors = selectedItems.size === 0 ? 0 : (
+    Array.isArray(activeSummary?.vendorOrders)
+      ? activeSummary!.vendorOrders!.reduce((sum, vendor) => sum + Number(vendor?.shippingFee || 0), 0)
+      : 0
+  );
+  const shipping = selectedItems.size === 0 ? 0 : (activeSummary?.shippingFee ?? shippingFromVendors);
+  const discount = selectedItems.size === 0 ? 0 : (activeSummary?.totalDiscount || 0);
+  const total = selectedItems.size === 0 ? 0 : (activeSummary?.totalAmount ?? (subtotal + shipping - discount));
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['left', 'right']}>
       <ScrollView 
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
@@ -249,7 +317,21 @@ export default function CartScreen() {
         }
       >
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Giỏ Hàng</Text>
+          <View style={styles.headerLeft}>
+            <TouchableOpacity 
+              style={styles.selectAllCheckbox}
+              onPress={toggleSelectAll}
+            >
+              {cartItems.length > 0 && selectedItems.size === cartItems.length ? (
+                <CheckCircle2 size={20} color="#000" />
+              ) : selectedItems.size > 0 ? (
+                <CheckCircle2 size={20} color="#9ca3af" />
+              ) : (
+                <Circle size={20} color="#cbd5e1" />
+              )}
+            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Giỏ Hàng</Text>
+          </View>
           {cartItems.length > 0 && (
             <TouchableOpacity onPress={handleClearCart}>
               <Text style={styles.clearText}>Xóa tất cả</Text>
@@ -291,11 +373,19 @@ export default function CartScreen() {
           >
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Tạm tính:</Text>
-              <Text style={styles.summaryValue}>{subtotal.toLocaleString()}đ</Text>
+              {loadingSelectedSummary && selectedItems.size > 0 ? (
+                <ActivityIndicator size="small" color="#0f172a" />
+              ) : (
+                <Text style={styles.summaryValue}>{subtotal.toLocaleString()}đ</Text>
+              )}
             </View>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Phí vận chuyển:</Text>
-              <Text style={styles.summaryValue}>{shipping.toLocaleString()}đ</Text>
+              {loadingSelectedSummary && selectedItems.size > 0 ? (
+                <ActivityIndicator size="small" color="#0f172a" />
+              ) : (
+                <Text style={styles.summaryValue}>{shipping.toLocaleString()}đ</Text>
+              )}
             </View>
             {discount > 0 && (
               <View style={styles.summaryRow}>
@@ -307,17 +397,26 @@ export default function CartScreen() {
             <View style={styles.checkoutBar}>
               <View style={styles.totalContainer}>
                 <Text style={styles.totalLabelSmall}>Tổng cộng:</Text>
-                <Text style={styles.totalValueLarge}>{total.toLocaleString()}đ</Text>
+                {loadingSelectedSummary && selectedItems.size > 0 ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.totalValueLarge}>{total.toLocaleString()}đ</Text>
+                )}
               </View>
               <TouchableOpacity 
-                style={styles.checkoutBtnSmall}
+                style={[styles.checkoutBtnSmall, selectedItems.size === 0 && styles.checkoutBtnDisabled]}
                 onPress={() => {
-                  const ids = cartItems.map(i => i.cartItemId).join(',');
+                  if (selectedItems.size === 0) {
+                    toast.info('Vui lòng chọn ít nhất 1 sản phẩm');
+                    return;
+                  }
+                  const ids = Array.from(selectedItems).join(',');
                   router.push(`/checkout?cartItemId=${ids}`);
                 }}
+                disabled={selectedItems.size === 0 || loadingSelectedSummary}
               >
-                <Text style={styles.checkoutBtnTextSmall}>Thanh toán</Text>
-                <ChevronRight size={18} color="#fff" />
+                <Text style={styles.checkoutBtnTextSmall}>Thanh toán ({selectedItems.size})</Text>
+                <ChevronRight size={18} color={selectedItems.size === 0 ? '#9ca3af' : '#fff'} />
               </TouchableOpacity>
             </View>
           </LinearGradient>
@@ -348,8 +447,16 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'baseline',
+    alignItems: 'center',
     marginBottom: 24,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  selectAllCheckbox: {
+    padding: 4,
   },
   headerTitle: {
     fontSize: 24,
@@ -425,11 +532,16 @@ const styles = StyleSheet.create({
   },
   itemContainer: {
     flexDirection: 'row',
-    gap: 16,
+    gap: 12,
+    alignItems: 'flex-start',
+  },
+  checkboxContainer: {
+    paddingTop: 4,
+    paddingRight: 4,
   },
   itemImage: {
-    width: 90,
-    height: 90,
+    width: 80,
+    height: 80,
     borderRadius: 16,
     backgroundColor: '#f1f5f9',
   },
@@ -586,6 +698,11 @@ const styles = StyleSheet.create({
     gap: 4,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.2)',
+  },
+  checkoutBtnDisabled: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderColor: 'rgba(255,255,255,0.1)',
+    opacity: 0.6,
   },
   checkoutBtnTextSmall: {
     color: '#fff',
