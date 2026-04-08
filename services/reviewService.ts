@@ -1,11 +1,11 @@
-import { getAuthToken } from './auth';
+import { getAuthToken, initAuth } from './auth';
 import { API_BASE_URL } from './api';
 
 export interface CreateReviewRequest {
     itemId: string;
     rating: number;
     comment?: string;
-    reviewImages?: File[];
+    reviewImages?: Array<File | { uri: string; name?: string; type?: string }>;
 }
 
 export interface ReviewResponse {
@@ -18,7 +18,8 @@ export interface ReviewResponse {
 }
 
 export interface Review {
-    reviewId: string;
+    reviewId: string | number;
+    packageId?: number;
     itemId: string;
     variantId: number;
     variantName: string;
@@ -36,11 +37,32 @@ export interface Review {
 
 class ReviewService {
     private extractReviewArray(data: any): Review[] {
-        if (Array.isArray(data)) return data as Review[];
-        if (Array.isArray(data?.result)) return data.result as Review[];
-        if (Array.isArray(data?.result?.reviews)) return data.result.reviews as Review[];
-        if (Array.isArray(data?.data)) return data.data as Review[];
-        if (Array.isArray(data?.items)) return data.items as Review[];
+        if (!data) return [];
+
+        if (Array.isArray(data)) {
+            return data as Review[];
+        }
+
+        const items =
+            data?.result?.items ||
+            data?.Result?.Items ||
+            data?.result?.reviews ||
+            data?.result ||
+            data?.Result ||
+            data?.data ||
+            data?.Data ||
+            data?.items ||
+            data?.Items;
+
+        if (Array.isArray(items)) {
+            return items as Review[];
+        }
+
+        if (data?.result && typeof data.result === 'object') {
+            if (Array.isArray(data.result.items)) return data.result.items;
+            if (Array.isArray(data.result.data)) return data.result.data;
+        }
+
         return [];
     }
 
@@ -58,33 +80,80 @@ class ReviewService {
         return headers;
     }
 
+    private async getAuthHeaders(isMultipart = false): Promise<HeadersInit> {
+        let token = getAuthToken();
+        if (!token) {
+            await initAuth().catch(() => undefined);
+            token = getAuthToken();
+        }
+
+        const headers: HeadersInit = {
+            'Accept': '*/*',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        };
+
+        if (!isMultipart) {
+            headers['Content-Type'] = 'application/json';
+        }
+
+        return headers;
+    }
+
     async createReview(request: CreateReviewRequest): Promise<boolean> {
         try {
-            const formData = new FormData();
-            formData.append('ItemId', request.itemId);
-            formData.append('Rating', request.rating.toString());
-            
-            if (request.comment) formData.append('Comment', request.comment);
-            
-            if (request.reviewImages && request.reviewImages.length > 0) {
-                request.reviewImages.forEach((image) => {
-                    formData.append('ReviewImages', image);
-                });
-            }
+            const buildFormData = () => {
+                const formData = new FormData();
+                formData.append('ItemId', request.itemId);
+                formData.append('Rating', request.rating.toString());
 
+                if (request.comment) {
+                    formData.append('Comment', request.comment);
+                }
+
+                if (request.reviewImages && request.reviewImages.length > 0) {
+                    request.reviewImages.forEach((image, index) => {
+                        if (image && typeof image === 'object' && 'uri' in image) {
+                            formData.append('ReviewImages', {
+                                uri: image.uri,
+                                name: image.name || `review-${index + 1}.jpg`,
+                                type: image.type || 'image/jpeg',
+                            } as any);
+                        } else {
+                            formData.append('ReviewImages', image as any);
+                        }
+                    });
+                }
+
+                return formData;
+            };
+
+            const headers = await this.getAuthHeaders(true);
             const response = await fetch(`${API_BASE_URL}/reviews`, {
                 method: 'POST',
-                headers: this.getHeaders(true),
-                body: formData,
+                headers,
+                body: buildFormData(),
             });
 
             if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.errorMessages?.[0] || `HTTP error! status: ${response.status}`);
+                const raw = await response.text().catch(() => '');
+                let message = `HTTP error! status: ${response.status}`;
+                if (raw) {
+                    try {
+                        const errorData = JSON.parse(raw);
+                        message = errorData?.errorMessages?.[0] || errorData?.message || raw;
+                    } catch {
+                        message = raw;
+                    }
+                }
+                throw new Error(message);
             }
 
-            const data = await response.json();
-            return data.isSuccess || data.statusCode === 'OK' || data.isSucceeded;
+            const data = await response.json().catch(() => ({}));
+            if (data?.isSuccess === false) {
+                throw new Error(data?.errorMessages?.[0] || data?.message || 'Gửi đánh giá thất bại');
+            }
+
+            return data.isSuccess || data.statusCode === 'OK' || data.isSucceeded || true;
         } catch (error) {
             console.error('Failed to create review:', error);
             throw error;
@@ -109,6 +178,35 @@ class ReviewService {
             return this.extractReviewArray(data);
         } catch (error) {
             console.error('❌ Failed to fetch reviews by package:', error);
+            return [];
+        }
+    }
+
+    /** @deprecated Backend exposes reviews per package; prefer getReviewsByPackageId(route package id). */
+    async getReviewsByVariant(variantId: number | string): Promise<Review[]> {
+        try {
+            console.log(`🔍 Fetching reviews (legacy variant path) for: ${variantId}`);
+            let response = await fetch(`${API_BASE_URL}/reviews/variant/${variantId}`, {
+                method: 'GET',
+                headers: this.getHeaders(),
+            });
+
+            if (response.status === 404 || response.status === 405) {
+                response = await fetch(`${API_BASE_URL}/reviews?variantId=${variantId}`, {
+                    method: 'GET',
+                    headers: this.getHeaders(),
+                });
+            }
+
+            if (!response.ok) {
+                if (response.status === 404) return [];
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            return this.extractReviewArray(data);
+        } catch (error) {
+            console.error('❌ Failed to fetch reviews by variant:', error);
             return [];
         }
     }

@@ -226,6 +226,47 @@ class PackageService {
   }
 
   /**
+   * Lấy toàn bộ packages public bằng cách duyệt hết các trang từ API /packages
+   * Endpoint public chỉ trả Approved + Active
+   */
+  async getAllPublicPackages(pageSize: number = 50): Promise<ApiPackage[]> {
+    try {
+      let page = 1;
+      let hasNext = true;
+      const all: ApiPackage[] = [];
+
+      while (hasNext) {
+        const paged = await this.getPackages(page, pageSize);
+        if (!paged) break;
+
+        const items = Array.isArray(paged.items) ? paged.items : [];
+        all.push(...items);
+
+        if (typeof paged.hasNextPage === 'boolean') {
+          hasNext = paged.hasNextPage;
+        } else if (typeof paged.totalPages === 'number') {
+          hasNext = page < paged.totalPages;
+        } else {
+          hasNext = items.length === pageSize;
+        }
+
+        page += 1;
+      }
+
+      const uniqueById = new Map<string, ApiPackage>();
+      all.forEach((pkg) => {
+        const key = String(pkg.packageId ?? (pkg as any).id ?? '');
+        if (key) uniqueById.set(key, pkg);
+      });
+
+      return Array.from(uniqueById.values());
+    } catch (error) {
+      console.error('Failed to fetch all public packages:', error);
+      return [];
+    }
+  }
+
+  /**
    * Lấy chi tiết package theo ID
    * @param id - Package ID
    * @param useManagement - Sử dụng endpoint management (Staff/Vendor)
