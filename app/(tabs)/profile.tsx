@@ -160,7 +160,7 @@ export default function ProfileScreen() {
             <Text style={styles.headerEmail}>{user.email || 'N/A'}</Text>
           </View>
           
-          <TouchableOpacity style={[styles.logoutBtn, mustCompleteProfile && styles.logoutBtnDisabled]} onPress={handleLogout} disabled={mustCompleteProfile}>
+          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
             <LogOut color="#ef4444" size={24} />
           </TouchableOpacity>
         </View>
