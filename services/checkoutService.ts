@@ -1,5 +1,5 @@
 import { ApiResponse } from '../types';
-import { getAuthToken } from './auth';
+import { getAuthToken, initAuth } from './auth';
 import { API_BASE_URL } from './api';
 
 export interface CheckoutItem {
@@ -56,6 +56,8 @@ export interface CheckoutResult {
   paymentUrl?: string;
   checkoutUrl?: string; // Some APIs use checkoutUrl
 }
+
+type CheckoutResponse = CheckoutResult | boolean;
 
 class CheckoutService {
   private toNumber(...values: any[]): number {
@@ -169,8 +171,15 @@ class CheckoutService {
     return raw || fallback;
   }
 
-  private getHeaders(): HeadersInit {
-    const token = getAuthToken();
+  private async getHeaders(): Promise<HeadersInit> {
+    let token = getAuthToken();
+
+    // Avoid auth race on cold start: restore token from SecureStore if needed.
+    if (!token) {
+      await initAuth().catch(() => undefined);
+      token = getAuthToken();
+    }
+
     return {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
@@ -181,31 +190,49 @@ class CheckoutService {
   async getSummary(cartItemIds: number[]): Promise<CheckoutSummary | null> {
     try {
       const payload = cartItemIds.map(id => ({ cartItemId: id }));
-      const response = await fetch(`${API_BASE_URL}/checkout/summary`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-      });
+      const headers = await this.getHeaders();
+      const candidates = [
+        `${API_BASE_URL}/checkout/summary`,
+        `${API_BASE_URL}/checkout/summary?ActiveRole=Customer`,
+        `${API_BASE_URL}/checkout/summary?activeRole=Customer`,
+      ];
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || `HTTP error! status: ${response.status}`);
+      let lastMessage = '';
+
+      for (const url of candidates) {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+
+        if (response.ok) {
+          const rawData: any = await response.json();
+          const payloadData =
+            rawData && typeof rawData === 'object' && 'isSuccess' in rawData
+              ? (rawData.isSuccess ? rawData.result : null)
+              : (rawData?.result ?? rawData);
+
+          return this.normalizeSummary(payloadData);
+        }
+
+        lastMessage = await this.extractErrorMessage(response);
+
+        if (response.status === 403 || response.status === 404 || response.status === 405) {
+          continue;
+        }
+
+        throw new Error(lastMessage || `HTTP error! status: ${response.status}`);
       }
 
-      const rawData: any = await response.json();
-      const payloadData =
-        rawData && typeof rawData === 'object' && 'isSuccess' in rawData
-          ? (rawData.isSuccess ? rawData.result : null)
-          : (rawData?.result ?? rawData);
-
-      return this.normalizeSummary(payloadData);
+      throw new Error(lastMessage || 'Không thể tải thông tin thanh toán');
     } catch (error) {
       console.error('❌ Failed to fetch checkout summary:', error);
       throw error;
     }
   }
 
-  async processCheckout(request: CheckoutRequest): Promise<CheckoutResult | null> {
+  async processCheckout(request: CheckoutRequest): Promise<CheckoutResponse | null> {
     try {
       const formattedTime = String(request.deliveryTime || '').length > 5
         ? String(request.deliveryTime).substring(0, 5)
@@ -216,7 +243,7 @@ class CheckoutService {
         deliveryTime: formattedTime.endsWith(':00') ? formattedTime : `${formattedTime}:00`,
       };
 
-      const parseCheckoutResponse = async (response: Response): Promise<CheckoutResult | null> => {
+      const parseCheckoutResponse = async (response: Response): Promise<CheckoutResponse | null> => {
         const rawText = await response.text().catch(() => '');
         if (!rawText) return null;
 
@@ -235,10 +262,10 @@ class CheckoutService {
               : 'Đặt hàng thất bại';
             throw new Error(message);
           }
-          return (parsed.result ?? null) as CheckoutResult | null;
+          return (parsed.result ?? null) as CheckoutResponse | null;
         }
 
-        return parsed as CheckoutResult;
+        return parsed as CheckoutResponse;
       };
 
       const candidates: Array<{ url: string; body: any; bodyType: 'direct' | 'wrapped' }> = [
@@ -251,9 +278,10 @@ class CheckoutService {
       let lastMessage = '';
 
       for (const candidate of candidates) {
+        const headers = await this.getHeaders();
         const response = await fetch(candidate.url, {
           method: 'POST',
-          headers: this.getHeaders(),
+          headers,
           body: JSON.stringify(candidate.body),
         });
 
@@ -290,7 +318,7 @@ class CheckoutService {
     try {
       const response = await fetch(`${API_BASE_URL}/transactions/order/${orderId}`, {
         method: 'POST',
-        headers: this.getHeaders(),
+        headers: await this.getHeaders(),
       });
       return response.ok;
     } catch (error) {
@@ -303,7 +331,7 @@ class CheckoutService {
     try {
       const response = await fetch(`${API_BASE_URL}/payos/create-topup-link`, {
         method: 'POST',
-        headers: this.getHeaders(),
+        headers: await this.getHeaders(),
         body: JSON.stringify({ amount, type: 'Customer' }),
       });
 
@@ -336,7 +364,7 @@ class CheckoutService {
     try {
       const response = await fetch(`${API_BASE_URL}/payments/${transactionId}`, {
         method: 'GET',
-        headers: this.getHeaders(),
+        headers: await this.getHeaders(),
       });
 
       if (!response.ok) {
