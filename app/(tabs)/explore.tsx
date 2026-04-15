@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, StyleSheet, ScrollView, TouchableOpacity, 
-  TextInput, Image, ActivityIndicator, Dimensions, Modal, SafeAreaView 
+  TextInput, Image, ActivityIndicator, Dimensions, Modal 
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Search, Filter, Star, X, MapPin, Store, ChevronRight, ChevronLeft, SendToBack } from 'lucide-react-native';
 import { packageService } from '../../services/packageService';
@@ -71,7 +72,7 @@ export default function ExploreTab() {
           }
         }
 
-        const apiPackages = await packageService.getAllPackages();
+        const apiPackages = await packageService.getAllPublicPackages(50);
         if (apiPackages.length > 0) {
           const mappedProducts = await packageService.mapToProductsWithVendors(apiPackages);
 
@@ -118,10 +119,28 @@ export default function ExploreTab() {
 
   // Update effect từ router params
   useEffect(() => {
-    if (params.category) {
-      setActiveFilter(params.category as Occasion);
+    const rawCategory = String(params.category || '').trim();
+    const rawKeyword = String(params.keyword || '').trim();
+
+    if (!rawCategory && !rawKeyword) return;
+
+    const matchedCategory = categories
+      .filter((c) => c.isActive)
+      .find((c) => c.name.toLowerCase() === rawCategory.toLowerCase());
+
+    if (matchedCategory) {
+      setActiveFilter(matchedCategory.name as Occasion);
+      setSearchQuery('');
+      return;
     }
-  }, [params]);
+
+    setActiveFilter('All');
+    if (rawKeyword) {
+      setSearchQuery(rawKeyword);
+    } else if (rawCategory) {
+      setSearchQuery(rawCategory);
+    }
+  }, [params.category, params.keyword, categories]);
 
   // Handle Pagination reset
   useEffect(() => {
@@ -187,6 +206,7 @@ export default function ExploreTab() {
     const user = getCurrentUser();
     if (!user) {
       toast.error('Vui lòng đăng nhập để mâm cúng');
+      router.push('/login');
       return;
     }
     if (!product.variants || product.variants.length === 0) {
@@ -263,7 +283,7 @@ export default function ExploreTab() {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['left', 'right']}>
       <View style={styles.header}>
         <View style={styles.searchBar}>
           <Search color="#8E8E93" size={20} />
@@ -303,12 +323,12 @@ export default function ExploreTab() {
       <ScrollView ref={scrollViewRef} style={styles.scrollView} contentContainerStyle={{ padding: 16 }}>
         <View style={styles.listHeader}>
           <Text style={styles.listTitle}>
-            <Text style={{ fontStyle: 'italic', fontWeight: '900', color: '#8B4513' }}>{filteredProducts.length}</Text> Sản phẩm
+            <Text style={{ fontStyle: 'italic', fontWeight: '900', color: '#000' }}>{filteredProducts.length}</Text> Sản phẩm
           </Text>
         </View>
 
         {loading ? (
-          <ActivityIndicator size="large" color="#8B4513" style={{ marginTop: 40 }} />
+          <ActivityIndicator size="large" color="#000" style={{ marginTop: 40 }} />
         ) : filteredProducts.length === 0 ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyEmoji}>😞</Text>
