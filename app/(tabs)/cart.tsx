@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
-import { cartService, CartApi, CartItemApi } from '@/services/cartService';
+import { cartService, CartApi, CartItemApi } from '../../services/cartService';
 import { checkoutService, CheckoutSummary } from '@/services/checkoutService';
 import { getCurrentUser } from '@/services/auth';
 import toast from '@/services/toast';
@@ -47,9 +47,17 @@ export default function CartScreen() {
       const cartData = await cartService.getCart();
       setCart(cartData);
 
+      const cartItemIds = cartData?.cartItems?.map(item => item.cartItemId) || [];
+      setSelectedItems(prev => {
+        if (cartItemIds.length === 0) return new Set<number>();
+        if (prev.size === 0) return new Set<number>(cartItemIds);
+
+        const kept = cartItemIds.filter(id => prev.has(id));
+        return new Set<number>(kept);
+      });
+
       if (cartData && cartData.cartItems && cartData.cartItems.length > 0) {
         try {
-          const cartItemIds = cartData.cartItems.map(item => item.cartItemId);
           const summary = await checkoutService.getSummary(cartItemIds);
           setCheckoutSummary(summary);
         } catch (summaryError: any) {
@@ -241,6 +249,34 @@ export default function CartScreen() {
             <Text style={styles.itemName} numberOfLines={2}>{item.packageName}</Text>
             <Text style={styles.itemVariant}>{item.variantName}</Text>
             <Text style={styles.itemPrice}>{item.price.toLocaleString()}đ</Text>
+
+            {(item.swaps.length > 0 || item.addOns.length > 0) && (
+              <View style={styles.optionList}>
+                {item.swaps.map((swap) => (
+                  <View key={`${item.cartItemId}-swap-${swap.cartItemSwapId || swap.swapId}`} style={styles.optionLine}>
+                    <Text style={styles.optionDot}>○</Text>
+                    <Text style={styles.optionText} numberOfLines={1}>
+                      {swap.replacementDescription || swap.replacementItemName || 'Thay thế'}
+                    </Text>
+                    <Text style={styles.optionPriceText}>+{(Math.max(0, swap.surcharge) * item.quantity).toLocaleString()}đ</Text>
+                  </View>
+                ))}
+
+                {item.addOns.map((addOn) => (
+                  <View key={`${item.cartItemId}-addon-${addOn.cartItemAddOnId || addOn.addOnId}`} style={styles.optionLine}>
+                    <Text style={styles.optionDot}>○</Text>
+                    <Text style={styles.optionText} numberOfLines={1}>{addOn.itemName}</Text>
+                    <Text style={styles.optionQtyText}>x{addOn.quantity}</Text>
+                    <Text style={styles.optionPriceText}>+{addOn.lineTotal.toLocaleString()}đ</Text>
+                  </View>
+                ))}
+
+                <View style={styles.itemSubTotalRow}>
+                  <Text style={styles.itemSubTotalLabel}>Tạm tính mục này:</Text>
+                  <Text style={styles.itemSubTotalValue}>{item.lineTotal.toLocaleString()}đ</Text>
+                </View>
+              </View>
+            )}
             
             <View style={styles.itemActions}>
               <View style={styles.quantityContainer}>
@@ -565,6 +601,60 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '900',
     color: '#000000',
+  },
+  optionList: {
+    marginTop: 8,
+    marginBottom: 4,
+    paddingLeft: 8,
+    borderLeftWidth: 2,
+    borderLeftColor: '#e2e8f0',
+    gap: 4,
+  },
+  optionLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  optionDot: {
+    fontSize: 12,
+    color: '#1e293b',
+    fontWeight: '700',
+  },
+  optionText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#0f172a',
+    fontWeight: '700',
+  },
+  optionQtyText: {
+    fontSize: 10,
+    color: '#475569',
+    fontWeight: '700',
+  },
+  optionPriceText: {
+    fontSize: 11,
+    color: '#b45309',
+    fontWeight: '800',
+  },
+  itemSubTotalRow: {
+    marginTop: 4,
+    paddingTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  itemSubTotalLabel: {
+    fontSize: 10,
+    color: '#475569',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  itemSubTotalValue: {
+    fontSize: 12,
+    color: '#0f172a',
+    fontWeight: '900',
   },
   itemActions: {
     flexDirection: 'row',
