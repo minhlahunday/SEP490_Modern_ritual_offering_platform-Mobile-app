@@ -68,6 +68,35 @@ export default function ChatScreen() {
     });
   }, [messages]);
 
+  const goToMessagesManager = () => {
+    router.replace('/messages' as any);
+  };
+
+  const handleBackPress = () => {
+    if (activeSession) {
+      if (isVendorLocked) {
+        goToMessagesManager();
+        return;
+      }
+
+      setActiveSession(null);
+      setMessages([]);
+      return;
+    }
+
+    if (isVendorLocked) {
+      goToMessagesManager();
+      return;
+    }
+
+    if (typeof (router as any).canGoBack === 'function' && (router as any).canGoBack()) {
+      router.back();
+      return;
+    }
+
+    goToMessagesManager();
+  };
+
   const loadVendorMeta = async (sessionList: ChatSession[]) => {
     const ids = Array.from(new Set(sessionList.map((s) => String(s.vendorId || '').trim()).filter(Boolean)));
     const nextMap: Record<string, { name: string; avatar?: string }> = {};
@@ -290,14 +319,7 @@ export default function ChatScreen() {
 
       <View style={styles.header}>
         <TouchableOpacity
-          onPress={() => {
-            if (activeSession && !isVendorLocked) {
-              setActiveSession(null);
-              setMessages([]);
-              return;
-            }
-            router.back();
-          }}
+          onPress={handleBackPress}
           style={styles.backBtn}
         >
           <ChevronLeft size={22} color="#0f172a" />
