@@ -307,11 +307,38 @@ export default function OrderDetailsScreen() {
     for (const value of values) {
       if (typeof value === 'number' && Number.isFinite(value)) return value;
       if (typeof value === 'string' && value.trim() !== '') {
-        const parsed = Number(value);
+        const raw = value.trim();
+        const parsed = Number(raw);
         if (Number.isFinite(parsed)) return parsed;
+
+        const cleaned = raw.replace(/\s|₫|đ|vnd|VND|\+/g, '');
+        if (/^-?\d{1,3}([.,]\d{3})+$/.test(cleaned)) {
+          const grouped = Number(cleaned.replace(/[.,]/g, ''));
+          if (Number.isFinite(grouped)) return grouped;
+        }
+
+        const fallbackNumeric = Number(
+          cleaned
+            .replace(/[^0-9,.-]/g, '')
+            .replace(/[.,](?=\d{3}(\D|$))/g, '')
+            .replace(',', '.')
+        );
+        if (Number.isFinite(fallbackNumeric)) return fallbackNumeric;
       }
     }
     return 0;
+  };
+
+  const getItemBaseTotal = (item: any) => {
+    const qty = toNumber(item?.quantity, 1) || 1;
+    const unit = toNumber(item?.price, item?.unitPrice, item?.variantPrice, item?.retailPrice, item?.basePrice);
+    return toNumber(
+      item?.variantSubTotal,
+      item?.variantTotal,
+      item?.baseSubTotal,
+      item?.baseTotal,
+      unit * qty
+    );
   };
 
   const isRefundRelatedStatus = (rawStatus: any) => {
@@ -354,21 +381,130 @@ export default function OrderDetailsScreen() {
   const getItemTotal = (item: any) => {
     const qty = toNumber(item?.quantity, 1) || 1;
     const unit = toNumber(item?.price, item?.unitPrice, item?.variantPrice);
-    return toNumber(item?.lineTotal, item?.totalPrice, unit * qty);
+    return toNumber(
+      item?.lineTotal,
+      item?.totalAmount,
+      item?.subTotal,
+      item?.variantSubTotal,
+      unit * qty,
+    );
   };
 
-  const orderSubTotal = toNumber(
-    order?.pricing?.subTotal,
-    Array.isArray(order?.items) ? order.items.reduce((sum: number, item: any) => sum + getItemTotal(item), 0) : 0
-  );
-  const orderShippingFee = toNumber(order?.pricing?.shippingFee);
-  const orderDiscount = toNumber(order?.pricing?.discountAmount);
-  const orderTotal = toNumber(
-    order?.pricing?.finalAmount,
-    order?.pricing?.totalAmount,
-    orderSubTotal + orderShippingFee - orderDiscount
-  );
+  const getSwapDisplayText = (swap: any) => {
+    const fromName = String(swap?.originalItemName || '').trim();
+    const toName = String(swap?.replacementItemName || '').trim();
+    const desc = String(swap?.replacementDescription || '').trim();
+
+    if (fromName && toName) return `Đổi từ ${fromName} -> ${toName}`;
+    if (desc) return desc;
+    if (toName) return `Đổi thành ${toName}`;
+    if (fromName) return `Đổi từ ${fromName}`;
+    return 'Tùy chọn đổi món';
+  };
+
+  const getAddOnDisplayText = (addOn: any) => {
+    const name = String(addOn?.itemName || addOn?.name || '').trim();
+    return name || 'Món thêm';
+  };
+
+  const getSwapDisplayAmount = (item: any, swap: any) => {
+    const direct = toNumber(
+      swap?.lineTotal,
+      swap?.totalAmount,
+      swap?.totalPrice,
+      swap?.finalAmount,
+      swap?.surcharge,
+      swap?.surchargeAmount,
+      swap?.surchargeTotal,
+      swap?.totalSurcharge,
+      toNumber(swap?.refundableAmount, swap?.replacementAllocatedPrice)
+        - toNumber(swap?.originalItemAllocatedPrice, swap?.originalAllocatedPrice),
+      swap?.additionalPrice,
+      swap?.extraPrice,
+      swap?.extraFee,
+      swap?.priceDiff,
+      swap?.differencePrice,
+      swap?.differenceAmount,
+      swap?.deltaPrice,
+      swap?.amount,
+      swap?.price,
+    );
+
+    if (direct > 0) return direct;
+
+    const swaps = Array.isArray(item?.swaps) ? item.swaps : [];
+    if (!swaps.length) return direct;
+
+    const itemLineTotal = toNumber(item?.lineTotal, item?.totalAmount, item?.finalAmount, item?.subTotal);
+    const itemBaseTotal = toNumber(item?.variantSubTotal, item?.variantTotal, item?.baseSubTotal, item?.baseTotal);
+    const itemAddOnTotal = toNumber(item?.addOnSubTotal, item?.addOnsSubTotal, item?.addOnTotal, item?.totalAddOnAmount);
+
+    const swapSubTotal = toNumber(
+      item?.swapSubTotal,
+      item?.swapsSubTotal,
+      item?.swapTotal,
+      item?.totalSwapAmount,
+      itemLineTotal > 0 ? Math.max(0, itemLineTotal - itemBaseTotal - itemAddOnTotal) : 0,
+    );
+    if (swapSubTotal <= 0) return direct;
+
+    const amounts = swaps.map((entry: any) => toNumber(
+      entry?.lineTotal,
+      entry?.totalAmount,
+      entry?.totalPrice,
+      entry?.finalAmount,
+      entry?.surcharge,
+      entry?.surchargeAmount,
+      entry?.surchargeTotal,
+      entry?.totalSurcharge,
+      toNumber(entry?.refundableAmount, entry?.replacementAllocatedPrice)
+        - toNumber(entry?.originalItemAllocatedPrice, entry?.originalAllocatedPrice),
+      entry?.differenceAmount,
+      entry?.differencePrice,
+      entry?.amount,
+      entry?.price,
+    ));
+    const knownSum = amounts.reduce((sum: number, amount: number) => sum + (amount > 0 ? amount : 0), 0);
+    const missingIndexes = amounts
+      .map((amount: number, idx: number) => ({ amount, idx }))
+      .filter((entry: { amount: number; idx: number }) => entry.amount <= 0)
+      .map((entry: { amount: number; idx: number }) => entry.idx);
+
+    if (!missingIndexes.length) return direct;
+
+    const remainder = Math.max(0, swapSubTotal - knownSum);
+    if (remainder <= 0) return direct;
+
+    const swapIndex = swaps.findIndex((entry: any) => entry === swap);
+    if (swapIndex < 0 || !missingIndexes.includes(swapIndex)) return direct;
+
+    return Math.round(remainder / missingIndexes.length);
+  };
+
   const orderLevelRefunded = orderHasRefundSignal(order);
+
+  const getDisplayItemTotal = (item: any) => {
+    const total = toNumber(
+      item?.lineTotal,
+      item?.totalAmount,
+      item?.finalAmount,
+      item?.subTotal,
+      getItemTotal(item),
+    );
+    if (total > 0) return total;
+
+    const recomputed = toNumber(
+      getItemBaseTotal(item)
+      + toNumber(item?.swapSubTotal, item?.swapsSubTotal, item?.swapTotal)
+      + toNumber(item?.addOnSubTotal, item?.addOnsSubTotal, item?.addOnTotal),
+    );
+    if (recomputed > 0) return recomputed;
+
+    if (Array.isArray(order?.items) && order.items.length === 1) {
+      return toNumber(order?.pricing?.subTotal, order?.pricing?.totalAmount, order?.pricing?.finalAmount);
+    }
+    return total;
+  };
 
   const openProofImage = async (type: 'preparation' | 'delivery') => {
     const latest = await orderService.getOrderDetails(id as string).catch(() => null);
@@ -557,6 +693,44 @@ export default function OrderDetailsScreen() {
                 <Text style={styles.itemName} numberOfLines={2}>{item.packageName}</Text>
                 <Text style={styles.itemVariant}>Gói: {item.variantName}</Text>
                 <Text style={styles.itemQty}>Số lượng: {item.quantity}</Text>
+
+                {(Array.isArray(item.swaps) && item.swaps.length > 0) && (
+                  <View style={styles.itemOptionsWrap}>
+                    {item.swaps.map((swap, swapIdx) => (
+                      (() => {
+                        const swapAmount = getSwapDisplayAmount(item, swap);
+                        return (
+                          <View key={`${item.itemId}-swap-${swapIdx}`} style={styles.itemOptionRow}>
+                            <Text style={styles.itemOptionPrefix}>↪</Text>
+                            <Text style={styles.itemOptionText}>
+                              {getSwapDisplayText(swap)}
+                            </Text>
+                            {swapAmount > 0 ? (
+                              <Text style={styles.itemOptionPrice}>
+                                +{swapAmount.toLocaleString('vi-VN')}đ
+                              </Text>
+                            ) : null}
+                          </View>
+                        );
+                      })()
+                    ))}
+                  </View>
+                )}
+
+                {(Array.isArray(item.addOns) && item.addOns.length > 0) && (
+                  <View style={styles.itemOptionsWrap}>
+                    {item.addOns.map((addOn, addOnIdx) => (
+                      <View key={`${item.itemId}-addon-${addOnIdx}`} style={styles.itemOptionRow}>
+                        <Text style={styles.itemOptionPrefix}>⊕</Text>
+                        <Text style={styles.itemOptionText}>
+                          {getAddOnDisplayText(addOn)} x{addOn.quantity}
+                        </Text>
+                        <Text style={styles.itemOptionPriceGreen}>+{addOn.lineTotal.toLocaleString('vi-VN')}đ</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
                 {hasRefundBadge && (
                   <View style={styles.refundedItemBadge}>
                     <Text style={styles.refundedItemBadgeText}>ĐÃ HOÀN TIỀN</Text>
@@ -564,7 +738,10 @@ export default function OrderDetailsScreen() {
                 )}
               </View>
               <View style={styles.itemPriceCol}>
-                <Text style={styles.itemPrice}>{getItemTotal(item).toLocaleString('vi-VN')}đ</Text>
+                <Text style={styles.itemPrice}>{getDisplayItemTotal(item).toLocaleString('vi-VN')}đ</Text>
+                {(Array.isArray(item.swaps) && item.swaps.length > 0) || (Array.isArray(item.addOns) && item.addOns.length > 0) ? (
+                  <Text style={styles.itemSubTotalText}>Tổng item</Text>
+                ) : null}
                 {order.orderStatus.toUpperCase() === 'COMPLETED' && (
                   (() => {
                     const reviewItemId = getReviewItemId(item);
@@ -600,11 +777,6 @@ export default function OrderDetailsScreen() {
           <Text style={styles.sectionTitleInner}>Thông tin nhận hàng</Text>
           <View style={styles.infoGrid}>
             <View style={styles.infoItem}>
-              <Text style={styles.infoLabel}>Người nhận</Text>
-              <Text style={styles.infoValue}>{order.delivery.customerName}</Text>
-              <Text style={styles.infoSubValue}>{order.delivery.customerPhone}</Text>
-            </View>
-            <View style={styles.infoItem}>
               <Text style={styles.infoLabel}>Thời gian</Text>
               <Text style={styles.infoValue}>
                 {new Date(order.delivery.deliveryDate).toLocaleDateString('vi-VN')}
@@ -615,29 +787,6 @@ export default function OrderDetailsScreen() {
           <View style={styles.addressBox}>
             <MapPin size={16} color="#6b7280" />
             <Text style={styles.addressText}>{order.delivery.deliveryAddress}</Text>
-          </View>
-        </View>
-
-        {/* PAYMENT SUMMARY */}
-        <View style={styles.whiteSection}>
-          <Text style={styles.sectionTitleInner}>Tóm tắt thanh toán</Text>
-          <View style={styles.paymentRow}>
-            <Text style={styles.paymentLabel}>Tạm tính ({order.items.length} món)</Text>
-            <Text style={styles.paymentValue}>{orderSubTotal.toLocaleString('vi-VN')}đ</Text>
-          </View>
-          <View style={styles.paymentRow}>
-            <Text style={styles.paymentLabel}>Phí giao hàng</Text>
-            <Text style={styles.paymentValue}>{orderShippingFee.toLocaleString('vi-VN')}đ</Text>
-          </View>
-          {(orderDiscount > 0) && (
-            <View style={styles.paymentRow}>
-              <Text style={styles.paymentLabel}>Giảm giá</Text>
-              <Text style={[styles.paymentValue, { color: '#10b981' }]}>-{orderDiscount.toLocaleString('vi-VN')}đ</Text>
-            </View>
-          )}
-          <View style={[styles.paymentRow, styles.totalRow]}>
-            <Text style={styles.totalLabel}>Tổng thanh toán</Text>
-            <Text style={styles.totalValue}>{orderTotal.toLocaleString('vi-VN')}đ</Text>
           </View>
         </View>
 
@@ -899,6 +1048,39 @@ const styles = StyleSheet.create({
   itemName: { fontSize: 15, fontWeight: '700', color: '#111827' },
   itemVariant: { fontSize: 12, color: '#6b7280', marginTop: 4 },
   itemQty: { fontSize: 12, color: '#9ca3af', marginTop: 2 },
+  itemOptionsWrap: {
+    marginTop: 6,
+    paddingTop: 4,
+    gap: 3,
+  },
+  itemOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  itemOptionPrefix: {
+    fontSize: 11,
+    color: '#d97706',
+    fontWeight: '800',
+    width: 12,
+  },
+  itemOptionText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#475569',
+    fontWeight: '700',
+    flexWrap: 'wrap',
+  },
+  itemOptionPrice: {
+    fontSize: 11,
+    color: '#d97706',
+    fontWeight: '800',
+  },
+  itemOptionPriceGreen: {
+    fontSize: 11,
+    color: '#059669',
+    fontWeight: '800',
+  },
   refundedItemBadge: {
     alignSelf: 'flex-start',
     marginTop: 6,
@@ -916,6 +1098,13 @@ const styles = StyleSheet.create({
   },
   itemPriceCol: { alignItems: 'flex-end', justifyContent: 'space-between' },
   itemPrice: { fontSize: 15, fontWeight: '800', color: '#000' },
+  itemSubTotalText: {
+    fontSize: 10,
+    color: '#64748b',
+    fontWeight: '700',
+    marginTop: 4,
+    textTransform: 'uppercase',
+  },
   reviewBtnText: { fontSize: 12, fontWeight: 'bold', color: '#000', textDecorationLine: 'underline', marginTop: 8 },
 
   infoGrid: { flexDirection: 'row', gap: 20, marginBottom: 16 },

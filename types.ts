@@ -29,6 +29,21 @@ export interface Product {
   vendorId?: string;
   vendorName?: string;
   distanceKm?: number;
+  availableAddOns?: ProductAddOnOption[];
+}
+
+export interface ProductSwapOption {
+  swapId: number;
+  originalItemName: string;
+  replacementItemName: string;
+  surcharge: number;
+}
+
+export interface ProductAddOnOption {
+  addOnId: number;
+  itemName: string;
+  retailPrice: number;
+  maxQuantity: number;
 }
 
 // API Types
@@ -66,6 +81,7 @@ export interface ProductVariant {
   price: number;
   description: string;
   items: string[];
+  availableSwaps?: ProductSwapOption[];
 }
 
 export interface ApiResponse<T> {

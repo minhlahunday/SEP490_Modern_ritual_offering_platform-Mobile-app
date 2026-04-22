@@ -96,17 +96,55 @@ export default function MyOrdersScreen() {
     for (const value of values) {
       if (typeof value === 'number' && Number.isFinite(value)) return value;
       if (typeof value === 'string' && value.trim() !== '') {
-        const parsed = Number(value);
+        const raw = value.trim();
+        const parsed = Number(raw);
         if (Number.isFinite(parsed)) return parsed;
+
+        const cleaned = raw.replace(/\s|₫|đ|vnd|VND|\+/g, '');
+        if (/^-?\d{1,3}([.,]\d{3})+$/.test(cleaned)) {
+          const grouped = Number(cleaned.replace(/[.,]/g, ''));
+          if (Number.isFinite(grouped)) return grouped;
+        }
+
+        const fallbackNumeric = Number(
+          cleaned
+            .replace(/[^0-9,.-]/g, '')
+            .replace(/[.,](?=\d{3}(\D|$))/g, '')
+            .replace(',', '.')
+        );
+        if (Number.isFinite(fallbackNumeric)) return fallbackNumeric;
       }
     }
     return 0;
   };
 
+  const getItemBaseTotal = (item: any) => {
+    const qty = toNumber(item?.quantity, 1) || 1;
+    const unit = toNumber(item?.price, item?.unitPrice, item?.variantPrice, item?.retailPrice, item?.basePrice);
+    const lineTotal = toNumber(item?.lineTotal, item?.totalAmount, item?.finalAmount, item?.subTotal);
+    const swapSubTotal = toNumber(item?.swapSubTotal, item?.swapsSubTotal, item?.swapTotal, item?.totalSwapAmount);
+    const addOnSubTotal = toNumber(item?.addOnSubTotal, item?.addOnsSubTotal, item?.addOnTotal, item?.totalAddOnAmount);
+    return toNumber(
+      item?.variantSubTotal,
+      item?.variantTotal,
+      item?.baseSubTotal,
+      item?.baseTotal,
+      lineTotal > 0 ? Math.max(0, lineTotal - swapSubTotal - addOnSubTotal) : 0,
+      unit * qty
+    );
+  };
+
   const getItemTotal = (item: any) => {
     const qty = toNumber(item?.quantity, 1) || 1;
     const unit = toNumber(item?.price, item?.unitPrice, item?.variantPrice);
-    return toNumber(item?.lineTotal, item?.totalPrice, unit * qty);
+    return toNumber(
+      item?.lineTotal,
+      item?.totalAmount,
+      item?.finalAmount,
+      item?.subTotal,
+      item?.variantSubTotal,
+      unit * qty
+    );
   };
 
   const getOrderTotal = (order: any) => {
@@ -320,6 +358,15 @@ export default function MyOrdersScreen() {
                 onPress={() => router.push({ pathname: '/order-details/[id]', params: { id: order.orderId } } as any)}
               >
                 {order.items?.slice(0, 2).map((item, idx) => (
+                  (() => {
+                    const baseItemTotal = toNumber(getItemBaseTotal(item), getItemTotal(item));
+                    const resolvedItemTotal = baseItemTotal > 0
+                      ? baseItemTotal
+                      : (order.items?.length === 1
+                        ? toNumber(order?.pricing?.subTotal, order?.pricing?.totalAmount)
+                        : baseItemTotal);
+
+                    return (
                   <View key={idx} style={styles.itemRow}>
                     <Image
                       source={{
@@ -339,9 +386,11 @@ export default function MyOrdersScreen() {
                       )}
                     </View>
                     <Text style={styles.itemPrice}>
-                      {getItemTotal(item).toLocaleString('vi-VN')}đ
+                      {resolvedItemTotal.toLocaleString('vi-VN')}đ
                     </Text>
                   </View>
+                    );
+                  })()
                 ))}
                 {order.items && order.items.length > 2 && (
                   <Text style={styles.moreItemsText}>Xem thêm {order.items.length - 2} sản phẩm khác...</Text>

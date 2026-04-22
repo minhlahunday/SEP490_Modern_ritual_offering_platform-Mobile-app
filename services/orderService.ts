@@ -22,6 +22,28 @@ export interface OrderItem {
   refundedAmount?: number;
   refundedQuantity?: number;
   isRequestRefund?: boolean;
+  swaps?: {
+    swapId: string;
+    originalItemName: string;
+    replacementItemName: string;
+    replacementDescription?: string;
+    surcharge: number;
+    lineTotal?: number;
+    originalItemAllocatedPrice?: number;
+    refundableAmount?: number;
+  }[];
+  addOns?: {
+    addOnId: string;
+    itemName: string;
+    quantity: number;
+    retailPrice: number;
+    lineTotal: number;
+  }[];
+  variantSubTotal?: number;
+  swapSubTotal?: number;
+  addOnSubTotal?: number;
+  totalAmount?: number;
+  subTotal?: number;
 }
 
 export interface Order {
@@ -69,25 +91,209 @@ class OrderService {
     for (const value of values) {
       if (typeof value === 'number' && Number.isFinite(value)) return value;
       if (typeof value === 'string' && value.trim() !== '') {
-        const parsed = Number(value);
+        const raw = value.trim();
+        const parsed = Number(raw);
         if (Number.isFinite(parsed)) return parsed;
+
+        const cleaned = raw.replace(/\s|₫|đ|vnd|VND|\+/g, '');
+
+        // 1.400.000 or 1,400,000
+        if (/^-?\d{1,3}([.,]\d{3})+$/.test(cleaned)) {
+          const grouped = Number(cleaned.replace(/[.,]/g, ''));
+          if (Number.isFinite(grouped)) return grouped;
+        }
+
+        // Generic fallback: strip non-digit separators that usually represent grouping.
+        const fallbackNumeric = Number(
+          cleaned
+            .replace(/[^0-9,.-]/g, '')
+            .replace(/[.,](?=\d{3}(\D|$))/g, '')
+            .replace(',', '.')
+        );
+        if (Number.isFinite(fallbackNumeric)) return fallbackNumeric;
       }
     }
     return 0;
   }
 
   private normalizeOrder(raw: any): Order {
+    const vendorOrders = Array.isArray(raw?.vendorOrders)
+      ? raw.vendorOrders
+      : (Array.isArray(raw?.orderVendors) ? raw.orderVendors : []);
+
     const items =
       (Array.isArray(raw?.items) && raw.items)
       || (Array.isArray(raw?.orderItems) && raw.orderItems)
       || (Array.isArray(raw?.details) && raw.details)
       || (Array.isArray(raw?.orderDetails) && raw.orderDetails)
       || (Array.isArray(raw?.ritualItems) && raw.ritualItems)
+      || (vendorOrders.length > 0
+        ? vendorOrders.flatMap((vendor: any) => Array.isArray(vendor?.items) ? vendor.items : [])
+        : [])
       || [];
     const normalizedItems: OrderItem[] = items.map((item: any) => {
       const quantity = this.toNumber(item?.quantity, item?.qty, 1) || 1;
-      const price = this.toNumber(item?.price, item?.unitPrice, item?.variantPrice);
-      const lineTotal = this.toNumber(item?.lineTotal, item?.totalPrice, price * quantity);
+      const price = this.toNumber(
+        item?.price,
+        item?.unitPrice,
+        item?.variantPrice,
+        item?.retailPrice,
+        item?.basePrice,
+        item?.packagePrice,
+      );
+      const variantSubTotalRaw = this.toNumber(
+        item?.variantSubTotal,
+        item?.variantTotal,
+        item?.baseSubTotal,
+        item?.baseTotal,
+        item?.packageSubTotal,
+        item?.packageTotal,
+        item?.productSubTotal,
+        item?.productTotal,
+        price * quantity,
+      );
+      const lineTotal = this.toNumber(
+        item?.lineTotal,
+        item?.totalPrice,
+        item?.totalAmount,
+        item?.finalAmount,
+        item?.subTotal,
+        item?.amount,
+        item?.extendedPrice,
+        item?.pricing?.totalAmount,
+        item?.pricing?.lineTotal,
+      );
+      const rawSwaps = Array.isArray(item?.swaps)
+        ? item.swaps
+        : (Array.isArray(item?.orderItemSwaps)
+          ? item.orderItemSwaps
+          : (Array.isArray(item?.cartItemSwaps) ? item.cartItemSwaps : []));
+
+      const swaps = Array.isArray(rawSwaps)
+        ? rawSwaps.map((swap: any) => ({
+            swapId: String(swap?.swapId || swap?.id || '').trim(),
+            originalItemName: String(
+              swap?.originalItemName
+              || swap?.originalName
+              || swap?.fromItemName
+              || swap?.sourceItemName
+              || swap?.oldItemName
+              || ''
+            ).trim(),
+            replacementItemName: String(
+              swap?.replacementItemName
+              || swap?.replacementName
+              || swap?.toItemName
+              || swap?.targetItemName
+              || swap?.newItemName
+              || ''
+            ).trim(),
+            replacementDescription: String(
+              swap?.replacementDescription
+              || swap?.description
+              || swap?.displayName
+              || ''
+            ).trim() || undefined,
+            originalItemAllocatedPrice: this.toNumber(swap?.originalItemAllocatedPrice, swap?.originalAllocatedPrice),
+            refundableAmount: this.toNumber(swap?.refundableAmount, swap?.replacementAllocatedPrice),
+            surcharge: this.toNumber(
+              swap?.surcharge,
+              swap?.surchargeAmount,
+              swap?.surchargeTotal,
+              swap?.totalSurcharge,
+              swap?.additionalPrice,
+              swap?.extraPrice,
+              swap?.extraFee,
+              swap?.priceDiff,
+              swap?.differencePrice,
+              swap?.differenceAmount,
+              swap?.deltaPrice,
+              swap?.amount,
+              swap?.swapPrice,
+              swap?.optionPrice,
+              swap?.replacementPrice,
+              swap?.price,
+              swap?.pricing?.surcharge,
+              swap?.pricing?.amount,
+              swap?.swapOption?.surcharge,
+              swap?.swapOption?.price,
+              this.toNumber(swap?.refundableAmount, swap?.replacementAllocatedPrice)
+                - this.toNumber(swap?.originalItemAllocatedPrice, swap?.originalAllocatedPrice),
+            ),
+            lineTotal: this.toNumber(
+              swap?.lineTotal,
+              swap?.totalPrice,
+              swap?.totalAmount,
+              swap?.finalAmount,
+              swap?.amount,
+              swap?.pricing?.lineTotal,
+              this.toNumber(swap?.refundableAmount, swap?.replacementAllocatedPrice)
+                - this.toNumber(swap?.originalItemAllocatedPrice, swap?.originalAllocatedPrice),
+            ),
+          }))
+        : [];
+
+      const rawAddOns = Array.isArray(item?.addOns)
+        ? item.addOns
+        : (Array.isArray(item?.orderItemAddOns)
+          ? item.orderItemAddOns
+          : (Array.isArray(item?.cartItemAddOns) ? item.cartItemAddOns : []));
+
+      const addOns = Array.isArray(rawAddOns)
+        ? rawAddOns.map((addOn: any) => ({
+            addOnId: String(addOn?.addOnId || addOn?.id || '').trim(),
+            itemName: String(
+              addOn?.itemName
+              || addOn?.name
+              || addOn?.addOnName
+              || addOn?.title
+              || ''
+            ).trim(),
+            quantity: this.toNumber(addOn?.quantity, 0),
+            retailPrice: this.toNumber(addOn?.retailPrice, addOn?.price),
+            lineTotal: this.toNumber(
+              addOn?.lineTotal,
+              addOn?.totalAmount,
+              addOn?.subTotal,
+              this.toNumber(addOn?.retailPrice, addOn?.price) * this.toNumber(addOn?.quantity, 0)
+            ),
+          }))
+        : [];
+
+      const swapSubTotal = this.toNumber(
+        item?.swapSubTotal,
+        item?.swapsSubTotal,
+        item?.swapTotal,
+        item?.swapsTotal,
+        item?.totalSwapAmount,
+        item?.totalSwapSurcharge,
+        swaps.reduce((sum: number, swap: any) => sum + this.toNumber(swap?.lineTotal, swap?.surcharge), 0)
+      );
+
+      const addOnSubTotal = this.toNumber(
+        item?.addOnSubTotal,
+        item?.addOnsSubTotal,
+        item?.addOnTotal,
+        item?.addOnsTotal,
+        item?.totalAddOnAmount,
+        addOns.reduce((sum: number, addOn: any) => sum + this.toNumber(addOn?.lineTotal), 0)
+      );
+
+      const resolvedLineTotal = this.toNumber(
+        lineTotal,
+        item?.totalAmount,
+        item?.finalAmount,
+        item?.amount,
+        variantSubTotalRaw + swapSubTotal + addOnSubTotal,
+        price * quantity
+      );
+
+      const variantSubTotal = this.toNumber(
+        variantSubTotalRaw,
+        Math.max(0, resolvedLineTotal - swapSubTotal - addOnSubTotal),
+        price * quantity,
+      );
+
       const reviewItemId = String(
         item?.orderItemId
         || item?.itemId
@@ -119,7 +325,7 @@ class OrderService {
           || item?.package?.imageUrl
           || (Array.isArray(item?.package?.imageUrls) ? item.package.imageUrls[0] : undefined)
           || undefined,
-        lineTotal,
+        lineTotal: resolvedLineTotal,
         status: String(item?.status || item?.orderItemStatus || ''),
         refundStatus: String(item?.refundStatus || item?.refund?.status || ''),
         isRefunded: Boolean(item?.isRefunded),
@@ -128,6 +334,13 @@ class OrderService {
         refundedAmount: this.toNumber(item?.refundedAmount),
         refundedQuantity: this.toNumber(item?.refundedQuantity),
         isRequestRefund: Boolean(item?.isRequestRefund),
+        swaps,
+        addOns,
+        variantSubTotal,
+        swapSubTotal,
+        addOnSubTotal,
+        totalAmount: this.toNumber(item?.totalAmount, resolvedLineTotal),
+        subTotal: this.toNumber(item?.subTotal, resolvedLineTotal),
       };
     });
 
@@ -177,7 +390,7 @@ class OrderService {
         phoneNumber: String(raw?.customer?.phoneNumber || raw?.delivery?.customerPhone || ''),
       },
       vendor: {
-        profileId: String(raw?.vendor?.profileId || raw?.vendorProfileId || raw?.vendorId || ''),
+        profileId: String(raw?.vendor?.profileId || raw?.vendor?.vendorId || raw?.vendorProfileId || raw?.vendorId || ''),
         shopName: String(raw?.vendor?.shopName || raw?.shopName || 'Cua hang Viet Ritual'),
         shopAvatarUrl:
           raw?.vendor?.shopAvatarUrl
@@ -425,21 +638,52 @@ class OrderService {
 
   async getOrderDetails(orderId: string): Promise<Order | null> {
     try {
-      const response = await fetch(`${API_BASE_URL}/orders/${orderId}`, {
-        headers: this.getHeaders()
-      });
-      if (!response.ok) throw new Error('Failed to fetch order details');
-      const data: any = await response.json();
-      const rawOrder =
-        data && typeof data === 'object' && 'isSuccess' in data
-          ? (data.isSuccess ? data.result : null)
-          : (data?.result ?? data);
+      const normalizedOrderId = String(orderId || '').trim();
+      if (!normalizedOrderId) return null;
 
-      if (!rawOrder) return null;
+      const extractRawOrder = (data: any) => {
+        if (!data) return null;
+        if (data && typeof data === 'object' && 'isSuccess' in data) {
+          if (data.isSuccess === false) return null;
+          const result = data.result;
+          if (result && typeof result === 'object') return result;
+          return null;
+        }
+        if (data?.result && typeof data.result === 'object') return data.result;
+        if (data?.data && typeof data.data === 'object') return data.data;
+        if (data?.order && typeof data.order === 'object') return data.order;
+        if (typeof data === 'object' && (data?.orderId || data?.id)) return data;
+        return null;
+      };
 
-      const normalized = this.normalizeOrder(rawOrder);
-      const [enriched] = await this.enrichOrdersForDisplay([normalized]);
-      return enriched || normalized;
+      const candidates = [
+        `${API_BASE_URL}/orders/${encodeURIComponent(normalizedOrderId)}`,
+        `${API_BASE_URL}/orders/detail/${encodeURIComponent(normalizedOrderId)}`,
+        `${API_BASE_URL}/orders?orderId=${encodeURIComponent(normalizedOrderId)}`,
+      ];
+
+      for (const url of candidates) {
+        const response = await fetch(url, { headers: this.getHeaders() });
+        if (!response.ok) continue;
+
+        const data: any = await response.json().catch(() => null);
+        const rawOrder = extractRawOrder(data);
+        if (!rawOrder) continue;
+
+        const normalized = this.normalizeOrder(rawOrder);
+        const [enriched] = await this.enrichOrdersForDisplay([normalized]);
+        return enriched || normalized;
+      }
+
+      // Final fallback: load my orders and find the one requested.
+      const myOrders = await this.getMyOrders();
+      const found = myOrders.find((order) => String(order.orderId).trim() === normalizedOrderId);
+      if (found) {
+        const [enriched] = await this.enrichOrdersForDisplay([found]);
+        return enriched || found;
+      }
+
+      throw new Error('Failed to fetch order details');
     } catch (error) {
       console.error('Error fetching order details:', error);
       throw error;
