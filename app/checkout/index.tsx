@@ -90,6 +90,13 @@ export default function CheckoutScreen() {
     return `${y}-${m}-${d}`;
   };
 
+  const formatTimeLocalHms = (date: Date): string => {
+    const h = String(date.getHours()).padStart(2, '0');
+    const m = String(date.getMinutes()).padStart(2, '0');
+    const s = String(date.getSeconds()).padStart(2, '0');
+    return `${h}:${m}:${s}`;
+  };
+
   const resolveSummaryItems = (data: CheckoutSummary | null): any[] => {
     if (!data) return [];
     if (Array.isArray((data as any).items)) return (data as any).items;
@@ -169,6 +176,12 @@ export default function CheckoutScreen() {
   }, [cartItemId]);
 
   useEffect(() => {
+    if (!customTimeInput) {
+      setCustomTimeInput('15:00');
+    }
+  }, []);
+
+  useEffect(() => {
     if (String(payosCanceled || '') === '1') {
       toast.info('Bạn đã hủy thanh toán');
       router.replace({ pathname: '/checkout', params: { cartItemId } } as any);
@@ -223,18 +236,11 @@ export default function CheckoutScreen() {
       return;
     }
 
-    // Validate using the exact same logic as web version
-    // Create a date object by parsing the ISO string to ensure consistent timezone handling
-    const y = deliveryDate.getFullYear();
-    const m = String(deliveryDate.getMonth() + 1).padStart(2, '0');
-    const d = String(deliveryDate.getDate()).padStart(2, '0');
-    const dateStr = `${y}-${m}-${d}`;
-    
+    // Always build delivery datetime from local date object to avoid parse drift.
     const now = new Date();
     const [h, mins] = normalizedDeliveryTime.split(':').map(Number);
-    
-    // Parse the date string as the web does - this ensures consistency
-    const selectedDateTime = new Date(dateStr);
+
+    const selectedDateTime = new Date(deliveryDate);
     selectedDateTime.setHours(h, mins, 0, 0);
 
     const diffInHours = (selectedDateTime.getTime() - now.getTime()) / (1000 * 60 * 60);
@@ -259,8 +265,8 @@ export default function CheckoutScreen() {
     }
 
     const request: CheckoutRequest = {
-      deliveryDate: formatDateLocalYmd(deliveryDate),
-      deliveryTime: normalizedDeliveryTime,
+      deliveryDate: formatDateLocalYmd(selectedDateTime),
+      deliveryTime: formatTimeLocalHms(selectedDateTime),
       paymentMethod,
       items: summaryItems.length > 0
         ? summaryItems.map((item: any) => ({

@@ -65,6 +65,8 @@ export interface ApiPackage {
   categoryId: number;
   isActive: boolean;
   createdAt: string;
+  minPrice?: number;
+  totalSold?: number;
   packageVariants?: PackageVariant[];
   imageUrls?: string[];
   packageAvatarUrl?: string;

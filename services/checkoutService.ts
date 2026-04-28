@@ -234,13 +234,22 @@ class CheckoutService {
 
   async processCheckout(request: CheckoutRequest): Promise<CheckoutResponse | null> {
     try {
-      const formattedTime = String(request.deliveryTime || '').length > 5
-        ? String(request.deliveryTime).substring(0, 5)
-        : String(request.deliveryTime || '');
+      const normalizeDeliveryTime = (value: string): string => {
+        const raw = String(value || '').trim();
+        const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+        if (!match) return raw;
+
+        const h = Number(match[1]);
+        const m = Number(match[2]);
+        const s = Number(match[3] || 0);
+        if (h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59) return raw;
+
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      };
 
       const formattedRequest: CheckoutRequest = {
         ...request,
-        deliveryTime: formattedTime.endsWith(':00') ? formattedTime : `${formattedTime}:00`,
+        deliveryTime: normalizeDeliveryTime(request.deliveryTime),
       };
 
       const parseCheckoutResponse = async (response: Response): Promise<CheckoutResponse | null> => {
@@ -300,7 +309,12 @@ class CheckoutService {
           candidate.bodyType === 'direct' &&
           /the request field is required|request field is required|request is required/i.test(message);
 
-        if (isRouteMismatch || needsWrappedRequest) {
+        const mightBeBodyBindingIssue =
+          candidate.bodyType === 'direct' &&
+          (response.status === 400 || response.status === 422) &&
+          /thời gian giao hàng|delivery time|delivery date|model state|validation/i.test(message);
+
+        if (isRouteMismatch || needsWrappedRequest || mightBeBodyBindingIssue) {
           continue;
         }
 
