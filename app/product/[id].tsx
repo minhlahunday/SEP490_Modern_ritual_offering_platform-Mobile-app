@@ -43,6 +43,8 @@ export default function ProductDetailPage() {
   const [vendorReplyText, setVendorReplyText] = useState('');
   const [isSubmittingReply, setIsSubmittingReply] = useState(false);
   const [isVendor, setIsVendor] = useState(false);
+  const [selectedSwaps, setSelectedSwaps] = useState<Record<number, boolean>>({});
+  const [selectedAddOns, setSelectedAddOns] = useState<Record<number, number>>({});
 
   useEffect(() => {
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
@@ -218,6 +220,15 @@ export default function ProductDetailPage() {
     (selectedVariantIndex !== null ? product?.variants?.[selectedVariantIndex]?.description : '') ||
     '';
 
+  const selectedVariant = selectedVariantIndex !== null ? product?.variants?.[selectedVariantIndex] : null;
+  const variantBasePrice = selectedVariant?.price ?? product?.price ?? 0;
+  const selectedSwapDetails = selectedVariant?.availableSwaps?.filter((swap) => selectedSwaps[swap.swapId]) || [];
+  const selectedAddOnDetails = (product?.availableAddOns || []).filter((addOn) => (selectedAddOns[addOn.addOnId] || 0) > 0);
+  const baseTotal = variantBasePrice * quantity;
+  const swapSurchargeTotal = selectedSwapDetails.reduce((sum, swap) => sum + Math.max(0, swap.surcharge || 0), 0) * quantity;
+  const addOnTotal = selectedAddOnDetails.reduce((sum, addOn) => sum + (addOn.retailPrice * (selectedAddOns[addOn.addOnId] || 0)), 0);
+  const grandTotal = baseTotal + swapSurchargeTotal + addOnTotal;
+
   useEffect(() => {
     setCurrentMainImage(0);
   }, [selectedVariantIndex]);
@@ -251,7 +262,13 @@ export default function ProductDetailPage() {
     try {
       const success = await cartService.addToCart({
         variantId: selectedVariant.variantId,
-        quantity
+        quantity,
+        swaps: Object.entries(selectedSwaps)
+          .filter(([_, selected]) => selected)
+          .map(([swapId]) => ({ swapId: Number(swapId) })),
+        addOns: Object.entries(selectedAddOns)
+          .filter(([_, qty]) => qty > 0)
+          .map(([addOnId, qty]) => ({ addOnId: Number(addOnId), quantity: qty })),
       });
       if (success) {
         toast.success('Đã thêm vào giỏ hàng!');
@@ -288,7 +305,13 @@ export default function ProductDetailPage() {
     try {
       const cartItemId = await cartService.addToCartAndResolveItemId({
         variantId: selectedVariant.variantId,
-        quantity
+        quantity,
+        swaps: Object.entries(selectedSwaps)
+          .filter(([_, selected]) => selected)
+          .map(([swapId]) => ({ swapId: Number(swapId) })),
+        addOns: Object.entries(selectedAddOns)
+          .filter(([_, qty]) => qty > 0)
+          .map(([addOnId, qty]) => ({ addOnId: Number(addOnId), quantity: qty })),
       });
 
       if (cartItemId && cartItemId > 0) {
@@ -442,7 +465,13 @@ export default function ProductDetailPage() {
                 <TouchableOpacity 
                   key={variant.variantId} 
                   onPress={() => {
-                    setSelectedVariantIndex(index);
+                    if (selectedVariantIndex === index) {
+                      setSelectedVariantIndex(null);
+                    } else {
+                      setSelectedVariantIndex(index);
+                    }
+                    setSelectedSwaps({});
+                    setSelectedAddOns({});
                     setCurrentMainImage(0);
                   }}
                   style={[styles.variantCard, selectedVariantIndex === index && styles.variantCardActive]}
@@ -451,6 +480,115 @@ export default function ProductDetailPage() {
                   <Text style={styles.variantPrice}>{formatPrice(variant.price)}</Text>
                 </TouchableOpacity>
               ))}
+            </View>
+          </View>
+
+          {/* Available Swaps Section */}
+          {selectedVariantIndex !== null && selectedVariant?.availableSwaps && selectedVariant.availableSwaps.length > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>TÙY CHỌN THAY ĐỔI (SWAPS)</Text>
+              <View style={styles.optionList}>
+                {selectedVariant.availableSwaps.map((swap) => (
+                  <TouchableOpacity
+                    key={swap.swapId}
+                    style={[styles.optionCard, selectedSwaps[swap.swapId] && styles.optionCardActive]}
+                    onPress={() => setSelectedSwaps((prev) => ({ ...prev, [swap.swapId]: !prev[swap.swapId] }))}
+                    activeOpacity={0.9}
+                  >
+                    <View style={styles.optionCardContent}>
+                      <View style={styles.optionTextWrap}>
+                        <Text style={styles.swapOriginalText}>Thay {swap.originalItemName}</Text>
+                        <Text style={styles.swapReplacementText}>Bằng {swap.replacementItemName}</Text>
+                      </View>
+                      <View style={styles.optionRightWrap}>
+                        <Text style={[styles.swapPriceText, swap.surcharge > 0 ? styles.priceAccent : styles.priceFree]}>
+                          {swap.surcharge > 0 ? `+${swap.surcharge.toLocaleString('vi-VN')}đ` : 'Miễn phí'}
+                        </Text>
+                        <View style={[styles.checkCircle, selectedSwaps[swap.swapId] && styles.checkCircleActive]}>
+                          {selectedSwaps[swap.swapId] && <Text style={styles.checkMark}>✓</Text>}
+                        </View>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
+
+          {/* Available Add-ons Section */}
+          {product.availableAddOns && product.availableAddOns.length > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>MUA THÊM LỄ VẬT</Text>
+              <View style={styles.optionList}>
+                {product.availableAddOns.map((addOn) => {
+                  const currentQty = selectedAddOns[addOn.addOnId] || 0;
+                  return (
+                    <View key={addOn.addOnId} style={[styles.optionCard, currentQty > 0 && styles.optionCardActive]}>
+                      <View style={styles.optionCardContent}>
+                        <View style={styles.optionTextWrap}>
+                          <Text style={styles.addOnNameText}>{addOn.itemName}</Text>
+                          <Text style={styles.addOnPriceText}>{addOn.retailPrice.toLocaleString('vi-VN')}đ</Text>
+                        </View>
+
+                        <View style={styles.addOnQtyControl}>
+                          <TouchableOpacity
+                            onPress={() => setSelectedAddOns((prev) => ({ ...prev, [addOn.addOnId]: Math.max(0, currentQty - 1) }))}
+                            style={[styles.addOnQtyBtn, currentQty <= 0 && styles.addOnQtyBtnDisabled]}
+                            disabled={currentQty <= 0}
+                          >
+                            <Text style={[styles.addOnQtyBtnText, currentQty <= 0 && styles.addOnQtyBtnTextDisabled]}>-</Text>
+                          </TouchableOpacity>
+
+                          <Text style={styles.addOnQtyText}>{currentQty}</Text>
+
+                          <TouchableOpacity
+                            onPress={() => setSelectedAddOns((prev) => ({
+                              ...prev,
+                              [addOn.addOnId]: Math.min(addOn.maxQuantity, currentQty + 1),
+                            }))}
+                            style={[styles.addOnQtyBtn, currentQty >= addOn.maxQuantity && styles.addOnQtyBtnDisabled]}
+                            disabled={currentQty >= addOn.maxQuantity}
+                          >
+                            <Text style={[styles.addOnQtyBtnText, currentQty >= addOn.maxQuantity && styles.addOnQtyBtnTextDisabled]}>+</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          )}
+
+          {/* Price Breakdown Section */}
+          <View style={styles.section}>
+            <View style={styles.priceRowBreakdown}>
+              <Text style={styles.breakdownLabel}>Giá gói:</Text>
+              <Text style={styles.breakdownValue}>{baseTotal.toLocaleString('vi-VN')}đ</Text>
+            </View>
+
+            {selectedSwapDetails
+              .filter((swap) => swap.surcharge > 0)
+              .map((swap) => (
+                <View key={swap.swapId} style={styles.priceRowMinor}>
+                  <Text style={styles.breakdownMinorLabel}>Phụ phí đổi món ({swap.replacementItemName}):</Text>
+                  <Text style={styles.breakdownMinorValue}>+{(swap.surcharge * quantity).toLocaleString('vi-VN')}đ</Text>
+                </View>
+              ))}
+
+            {selectedAddOnDetails.map((addOn) => {
+              const qty = selectedAddOns[addOn.addOnId] || 0;
+              return (
+                <View key={addOn.addOnId} style={styles.priceRowMinor}>
+                  <Text style={styles.breakdownMinorLabelPrimary}>Thêm ({addOn.itemName} x{qty}):</Text>
+                  <Text style={styles.breakdownMinorValuePrimary}>+{(addOn.retailPrice * qty).toLocaleString('vi-VN')}đ</Text>
+                </View>
+              );
+            })}
+
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>TỔNG CỘNG:</Text>
+              <Text style={styles.totalValue}>{grandTotal.toLocaleString('vi-VN')}đ</Text>
             </View>
           </View>
 
@@ -738,6 +876,193 @@ const styles = StyleSheet.create({
   variantTier: { fontSize: 14, fontWeight: '700', color: '#334155', marginBottom: 4 },
   variantTierActive: { color: '#000' },
   variantPrice: { fontSize: 12, fontWeight: '600', color: '#64748b' },
+
+  optionList: { gap: 10 },
+  optionCard: {
+    borderWidth: 2,
+    borderColor: '#f1f5f9',
+    borderRadius: 16,
+    backgroundColor: '#FFF',
+    padding: 14,
+  },
+  optionCardActive: {
+    borderColor: '#000',
+    backgroundColor: '#f8fafc',
+  },
+  optionCardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  optionTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  optionRightWrap: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    minWidth: 84,
+    gap: 6,
+  },
+  swapOriginalText: {
+    fontSize: 13,
+    color: '#64748b',
+    textDecorationLine: 'line-through',
+    fontWeight: '600',
+  },
+  swapReplacementText: {
+    fontSize: 16,
+    color: '#0f172a',
+    fontWeight: '800',
+    lineHeight: 21,
+  },
+  swapPriceText: {
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  priceAccent: {
+    color: '#d97706',
+  },
+  priceFree: {
+    color: '#059669',
+  },
+  checkCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: '#cbd5e1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFF',
+  },
+  checkCircleActive: {
+    backgroundColor: '#000',
+    borderColor: '#000',
+  },
+  checkMark: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+
+  addOnNameText: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#0f172a',
+    lineHeight: 21,
+  },
+  addOnPriceText: {
+    fontSize: 13,
+    color: '#0f172a',
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  addOnQtyControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f1f5f9',
+    borderRadius: 12,
+    padding: 3,
+    gap: 4,
+  },
+  addOnQtyBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    backgroundColor: '#FFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addOnQtyBtnDisabled: {
+    backgroundColor: '#f8fafc',
+  },
+  addOnQtyBtnText: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#0f172a',
+    lineHeight: 20,
+  },
+  addOnQtyBtnTextDisabled: {
+    color: '#cbd5e1',
+  },
+  addOnQtyText: {
+    minWidth: 24,
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '900',
+    color: '#0f172a',
+  },
+
+  priceRowBreakdown: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  priceRowMinor: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 6,
+    gap: 8,
+  },
+  breakdownLabel: {
+    fontSize: 13,
+    color: '#0f172a',
+    fontWeight: '700',
+  },
+  breakdownValue: {
+    fontSize: 14,
+    color: '#334155',
+    fontWeight: '800',
+  },
+  breakdownMinorLabel: {
+    flex: 1,
+    fontSize: 11,
+    color: '#d97706',
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  breakdownMinorValue: {
+    fontSize: 12,
+    color: '#d97706',
+    fontWeight: '800',
+  },
+  breakdownMinorLabelPrimary: {
+    flex: 1,
+    fontSize: 11,
+    color: '#b45309',
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  breakdownMinorValuePrimary: {
+    fontSize: 12,
+    color: '#b45309',
+    fontWeight: '800',
+  },
+  totalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    borderStyle: 'dashed',
+  },
+  totalLabel: {
+    fontSize: 14,
+    fontWeight: '900',
+    color: '#0f172a',
+  },
+  totalValue: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#000',
+    lineHeight: 24,
+  },
 
   descBox: { backgroundColor: '#f8fafc', padding: 16, borderRadius: 16, marginBottom: 16, borderWidth: 1, borderColor: '#e2e8f0' },
   descText: { fontSize: 16, color: '#0f172a', fontWeight: '700', lineHeight: 24 },

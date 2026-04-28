@@ -524,7 +524,13 @@ class PackageService {
         tier: variant.variantName,
         price: variant.price,
         description: variant.description,
-        items: items.length > 0 ? items : []
+        items: items.length > 0 ? items : [],
+        availableSwaps: (variant.availableSwaps || []).map((swap: any) => ({
+          swapId: Number(swap.swapId ?? swap.id ?? 0),
+          originalItemName: String(swap.originalItemName || swap.originalName || ''),
+          replacementItemName: String(swap.replacementItemName || swap.replacementName || ''),
+          surcharge: Number(swap.surcharge || 0),
+        })).filter((swap: any) => swap.swapId > 0)
       };
     });
 
@@ -551,12 +557,28 @@ class PackageService {
       ? rawImageUrls.map((url: string) => fixUrl(url))
       : (apiPackage.packageAvatarUrl ? [fixUrl(apiPackage.packageAvatarUrl)] : this.generateGalleryImages(pkgId));
 
+    const parsedAddOns = ((apiPackage as any).availableAddOns || (apiPackage as any).addOns || []).map((addOn: any) => ({
+      addOnId: Number(addOn.addOnId ?? addOn.id ?? 0),
+      itemName: String(addOn.itemName || addOn.name || ''),
+      retailPrice: Number(addOn.retailPrice ?? addOn.price ?? 0),
+      maxQuantity: Math.max(1, Number(addOn.maxQuantity ?? addOn.maximumQuantity ?? 1)),
+    })).filter((addOn: any) => addOn.addOnId > 0);
+
+    const apiMinPrice = Number((apiPackage as any).minPrice ?? 0);
+    const variantPrices = parsedVariants
+      .map((variant: any) => Number(variant.price))
+      .filter((price: number) => Number.isFinite(price) && price > 0);
+    const lowestVariantPrice = variantPrices.length > 0 ? Math.min(...variantPrices) : 0;
+    const resolvedPrice = apiMinPrice > 0
+      ? apiMinPrice
+      : (lowestVariantPrice > 0 ? lowestVariantPrice : (defaultVariant?.price || 2500000));
+
     return {
       id: pkgId,
       name: pkgName,
       description: apiPackage.description || 'Mâm cúng truyền thống với đầy đủ lễ vật',
       category: (apiPackage as any).categoryName || (apiPackage as any).ceremonyCategory?.name || this.mapCategoryIdToOccasion(apiPackage.categoryId?.toString() || '1'),
-      price: defaultVariant?.price || 2500000,
+      price: resolvedPrice,
       image: finalImage,
       gallery: finalGallery,
       rating: apiPackage.ratingAvg || 0,
@@ -568,6 +590,7 @@ class PackageService {
       variants: parsedVariants || [],
       vendorId: vendorId,
       vendorName: vendor?.shopName || (vendorId ? `Shop ${vendorId.substring(0, 8)}` : 'Shop'),
+      availableAddOns: parsedAddOns,
     };
   }
 
