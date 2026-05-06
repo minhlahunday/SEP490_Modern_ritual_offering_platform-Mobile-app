@@ -589,6 +589,8 @@ export interface UserProfile {
   businessLicenseNo: string | null;
   verificationStatus: string | null;
   ratingAvg: number;
+  canceledOrdersCount: number;
+  orderBlockedUntil: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -719,6 +721,8 @@ export async function getProfile(): Promise<UserProfile> {
         businessLicenseNo: null,
         verificationStatus: null,
         ratingAvg: 0,
+        canceledOrdersCount: 0,
+        orderBlockedUntil: null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };

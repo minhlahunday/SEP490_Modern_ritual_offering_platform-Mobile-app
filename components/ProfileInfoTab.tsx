@@ -860,6 +860,20 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
         <View style={styles.divider} />
 
         <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Khóa đặt hàng tới ngày</Text>
+          <Text style={styles.infoValue}>
+            {profile?.orderBlockedUntil ? new Date(profile.orderBlockedUntil).toLocaleDateString() : 'Không bị khóa'}
+          </Text>
+        </View>
+        <View style={styles.divider} />
+
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Số lần hủy đơn trong tháng</Text>
+          <Text style={styles.infoValue}>{profile?.canceledOrdersCount || 0} đơn</Text>
+        </View>
+        <View style={styles.divider} />
+
+        <View style={styles.infoRow}>
           <Text style={styles.infoLabel}>Địa chỉ</Text>
           <Text style={styles.infoValue}>{resolvedProfileAddress || 'Chưa thiết lập'}</Text>
         </View>
