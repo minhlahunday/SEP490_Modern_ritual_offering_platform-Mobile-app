@@ -30,6 +30,7 @@ export default function ProductDetailPage() {
   
   const [loading, setLoading] = useState(true);
   const [selectedVariantIndex, setSelectedVariantIndex] = useState<number | null>(null);
+  const [hoveredVariantIndex, setHoveredVariantIndex] = useState<number | null>(null);
   const [currentMainImage, setCurrentMainImage] = useState(0);
   const [quantity, setQuantity] = useState(1);
   const [addingToCart, setAddingToCart] = useState(false);
@@ -209,11 +210,42 @@ export default function ProductDetailPage() {
   const variantImages = Array.from(new Set([
     String(selectedVariantMeta?.imageUrl || '').trim(),
     ...(Array.isArray(selectedVariantMeta?.variantImages) ? selectedVariantMeta.variantImages : []),
+    ...(Array.isArray(selectedVariantMeta?.imageUrls) ? selectedVariantMeta.imageUrls : []),
   ]))
     .map((url) => String(url || '').trim())
     .filter(Boolean);
 
   const displayImages = variantImages.length > 0 ? variantImages : productImages;
+
+  const activeVariantIndex = hoveredVariantIndex !== null ? hoveredVariantIndex : selectedVariantIndex;
+
+  const getVariantMainImageIndex = (variantIndex: number | null, images: string[], hasVariantSpecificImages: boolean) => {
+    if (images.length === 0 || variantIndex === null) return 0;
+    if (hasVariantSpecificImages) return 0;
+    return Math.min(Math.max(variantIndex, 0), images.length - 1);
+  };
+
+  const getSelectedVariantImageIndex = (variantIndex: number | null) => {
+    if (variantIndex === null) return 0;
+
+    const selectedVariant = Array.isArray(packageMeta?.packageVariants)
+      ? packageMeta.packageVariants[variantIndex]
+      : null;
+
+    const selectedImages = selectedVariant
+      ? Array.from(new Set([
+        String(selectedVariant?.imageUrl || '').trim(),
+        ...(Array.isArray(selectedVariant?.variantImages) ? selectedVariant.variantImages : []),
+        ...(Array.isArray(selectedVariant?.imageUrls) ? selectedVariant.imageUrls : []),
+      ])).filter(Boolean)
+      : [];
+
+    return getVariantMainImageIndex(
+      variantIndex,
+      selectedImages.length > 0 ? selectedImages : productImages,
+      selectedImages.length > 0,
+    );
+  };
 
   const selectedVariantDescription =
     selectedVariantMeta?.description ||
@@ -230,8 +262,8 @@ export default function ProductDetailPage() {
   const grandTotal = baseTotal + swapSurchargeTotal + addOnTotal;
 
   useEffect(() => {
-    setCurrentMainImage(0);
-  }, [selectedVariantIndex]);
+    setCurrentMainImage(getSelectedVariantImageIndex(activeVariantIndex));
+  }, [activeVariantIndex, productImages.length, packageMeta?.packageVariants?.length]);
 
   useEffect(() => {
     if (currentMainImage > displayImages.length - 1) {
@@ -472,7 +504,49 @@ export default function ProductDetailPage() {
                     }
                     setSelectedSwaps({});
                     setSelectedAddOns({});
-                    setCurrentMainImage(0);
+
+                    const nextImages = Array.from(new Set([
+                      String((variant as any)?.imageUrl || '').trim(),
+                      ...(Array.isArray((variant as any)?.variantImages) ? (variant as any).variantImages : []),
+                      ...(Array.isArray((variant as any)?.imageUrls) ? (variant as any).imageUrls : []),
+                    ])).filter(Boolean);
+
+                    setCurrentMainImage(
+                      getVariantMainImageIndex(index, nextImages.length > 0 ? nextImages : productImages, nextImages.length > 0),
+                    );
+                  }}
+                  onPressIn={() => {
+                    const nextImages = Array.from(new Set([
+                      String((variant as any)?.imageUrl || '').trim(),
+                      ...(Array.isArray((variant as any)?.variantImages) ? (variant as any).variantImages : []),
+                      ...(Array.isArray((variant as any)?.imageUrls) ? (variant as any).imageUrls : []),
+                    ])).filter(Boolean);
+
+                    setHoveredVariantIndex(index);
+                    setCurrentMainImage(
+                      getVariantMainImageIndex(index, nextImages.length > 0 ? nextImages : productImages, nextImages.length > 0),
+                    );
+                  }}
+                  onPressOut={() => {
+                    setHoveredVariantIndex(null);
+                    setCurrentMainImage(getSelectedVariantImageIndex(selectedVariantIndex));
+                  }}
+                  onMouseEnter={() => {
+                    setHoveredVariantIndex(index);
+
+                    const nextImages = Array.from(new Set([
+                      String((variant as any)?.imageUrl || '').trim(),
+                      ...(Array.isArray((variant as any)?.variantImages) ? (variant as any).variantImages : []),
+                      ...(Array.isArray((variant as any)?.imageUrls) ? (variant as any).imageUrls : []),
+                    ])).filter(Boolean);
+
+                    setCurrentMainImage(
+                      getVariantMainImageIndex(index, nextImages.length > 0 ? nextImages : productImages, nextImages.length > 0),
+                    );
+                  }}
+                  onMouseLeave={() => {
+                    setHoveredVariantIndex(null);
+                    setCurrentMainImage(getSelectedVariantImageIndex(selectedVariantIndex));
                   }}
                   style={[styles.variantCard, selectedVariantIndex === index && styles.variantCardActive]}
                 >
@@ -481,6 +555,28 @@ export default function ProductDetailPage() {
                 </TouchableOpacity>
               ))}
             </View>
+            {selectedVariant && (
+              <View style={styles.variantMetaRow}>
+                <View style={styles.variantMetaItem}>
+                  <Text style={styles.variantMetaLabel}>TỐI THIỂU</Text>
+                  <Text style={styles.variantMetaValue}>{selectedVariant.minOrderQuantity ?? 1}</Text>
+                </View>
+                <View style={styles.variantMetaDivider} />
+                <View style={styles.variantMetaItem}>
+                  <Text style={styles.variantMetaLabel}>TỐI ĐA</Text>
+                  <Text style={styles.variantMetaValue}>{selectedVariant.maxOrderQuantity ?? 99}</Text>
+                </View>
+                {selectedVariant.productionWeight !== undefined && (
+                  <>
+                    <View style={styles.variantMetaDivider} />
+                    <View style={styles.variantMetaItem}>
+                      <Text style={styles.variantMetaLabel}>ĐIỂM NĂNG LỰC</Text>
+                      <Text style={styles.variantMetaValue}>{selectedVariant.productionWeight}</Text>
+                    </View>
+                  </>
+                )}
+              </View>
+            )}
           </View>
 
           {/* Available Swaps Section */}
@@ -876,6 +972,42 @@ const styles = StyleSheet.create({
   variantTier: { fontSize: 14, fontWeight: '700', color: '#334155', marginBottom: 4 },
   variantTierActive: { color: '#000' },
   variantPrice: { fontSize: 12, fontWeight: '600', color: '#64748b' },
+  variantMetaRow: {
+    marginTop: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  variantMetaItem: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  variantMetaLabel: {
+    fontSize: 9,
+    fontWeight: '900',
+    color: '#94a3b8',
+    letterSpacing: 1,
+    marginBottom: 2,
+  },
+  variantMetaValue: {
+    fontSize: 14,
+    fontWeight: '900',
+    color: '#0f172a',
+  },
+  variantMetaDivider: {
+    width: 1,
+    alignSelf: 'stretch',
+    backgroundColor: '#e2e8f0',
+  },
 
   optionList: { gap: 10 },
   optionCard: {

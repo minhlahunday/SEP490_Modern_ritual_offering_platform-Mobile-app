@@ -6,6 +6,251 @@ import { getAuthToken } from './auth';
 import { API_BASE_URL } from './api';
 
 class PackageService {
+  private managementCollectionEndpointUnavailable = false;
+  private hasWarnedMissingManagementCollection = false;
+
+  private sanitizeAddOnIds(ids?: number[]): number[] {
+    if (!Array.isArray(ids)) return [];
+    return Array.from(new Set(ids
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0)));
+  }
+
+  private sanitizeNewAddOns(newAddOns?: Array<{
+    addOnName: string;
+    description?: string;
+    price: number;
+    imageUrl?: string;
+    maxQtyPerOrder?: number;
+  }>) {
+    if (!Array.isArray(newAddOns)) return [];
+    return newAddOns
+      .map((item) => ({
+        addOnName: String(item?.addOnName || '').trim(),
+        description: String(item?.description || '').trim(),
+        price: Number(item?.price || 0),
+        imageUrl: String(item?.imageUrl || '').trim(),
+        maxQtyPerOrder: Number(item?.maxQtyPerOrder || 0),
+      }))
+      .filter((item) => item.addOnName && item.price > 0)
+      .map((item) => ({
+        addOnName: item.addOnName,
+        description: item.description,
+        price: item.price,
+        ...(item.imageUrl ? { imageUrl: item.imageUrl } : {}),
+        ...(item.maxQtyPerOrder > 0 ? { maxQtyPerOrder: item.maxQtyPerOrder } : {}),
+      }));
+  }
+
+  private normalizeVariantId(id: string | number | undefined): string | number | undefined {
+    if (id == null) return undefined;
+    if (typeof id === 'number' && Number.isFinite(id)) return id;
+    const asNumber = Number(id);
+    if (Number.isFinite(asNumber) && String(asNumber) === String(id).trim()) {
+      return asNumber;
+    }
+    return String(id).trim() || undefined;
+  }
+
+  private extractBackendErrorMessage(errText: string): string | null {
+    const raw = String(errText || '').trim();
+    if (!raw) return null;
+
+    try {
+      const errObj: any = JSON.parse(raw);
+
+      const directMessage = errObj?.message || errObj?.title || errObj?.detail;
+      if (typeof directMessage === 'string' && directMessage.trim()) return directMessage;
+
+      const errorMessages = errObj?.errorMessages;
+      if (Array.isArray(errorMessages) && errorMessages.length > 0) return String(errorMessages[0]);
+
+      const errorsAny = errObj?.errors ?? errObj?.Errors;
+      if (Array.isArray(errorsAny) && errorsAny.length > 0) return String(errorsAny[0]);
+      if (errorsAny && typeof errorsAny === 'object') {
+        const firstKey = Object.keys(errorsAny)[0];
+        const firstVal = (errorsAny as any)[firstKey];
+        if (Array.isArray(firstVal) && firstVal.length > 0) return String(firstVal[0]);
+        if (typeof firstVal === 'string' && firstVal.trim()) return String(firstVal);
+      }
+
+      const nestedMsg = errObj?.result?.message || errObj?.result?.title || errObj?.result?.detail;
+      if (typeof nestedMsg === 'string' && nestedMsg.trim()) return nestedMsg;
+      const nestedErrors = errObj?.result?.errors;
+      if (Array.isArray(nestedErrors) && nestedErrors.length > 0) return String(nestedErrors[0]);
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private buildPackageMutationPayload(
+    payload: {
+      packageName: string;
+      description: string;
+      categoryId: number;
+      packageImageUrls: string[];
+      primaryImageIndex: number;
+      action: string;
+      variants: {
+        variantId?: string | number;
+        packageVariantId?: string | number;
+        id?: string | number;
+        variantName: string;
+        description: string;
+        price: number;
+        imageUrl?: string;
+        variantImageUrls?: string[];
+        primaryVariantImageIndex?: number;
+        swaps?: {
+          originalItemName: string;
+          originalItemAllocatedPrice: number;
+          replacementItemName: string;
+          surcharge: number;
+          displayOrder: number;
+        }[];
+      }[];
+      addOnIds?: number[];
+      newAddOns?: {
+        addOnName: string;
+        description?: string;
+        price: number;
+        imageUrl?: string;
+        maxQtyPerOrder?: number;
+      }[];
+    },
+    variantImageMode: 'modern' | 'legacy',
+    mutationMode: 'create' | 'update',
+  ) {
+    const cleanedPackageImages = (payload.packageImageUrls || []).filter((url) => String(url || '').trim());
+    const packagePrimaryIndex = typeof payload.primaryImageIndex === 'number' && payload.primaryImageIndex >= 0 && payload.primaryImageIndex < cleanedPackageImages.length
+      ? payload.primaryImageIndex
+      : 0;
+
+    return {
+      packageName: payload.packageName,
+      description: payload.description,
+      categoryId: payload.categoryId,
+      packageImageUrls: cleanedPackageImages,
+      primaryImageIndex: packagePrimaryIndex,
+      action: payload.action,
+      variants: payload.variants.map((variant) => {
+        const cleanedVariantImages = (variant.variantImageUrls || []).filter((url) => String(url || '').trim());
+        const safePrimaryIndex = typeof variant.primaryVariantImageIndex === 'number'
+          && variant.primaryVariantImageIndex >= 0
+          && variant.primaryVariantImageIndex < cleanedVariantImages.length
+          ? variant.primaryVariantImageIndex
+          : 0;
+        const primaryImageUrl = cleanedVariantImages[safePrimaryIndex] || cleanedVariantImages[0] || '';
+        const variantIdRaw = variant.variantId ?? variant.packageVariantId ?? variant.id;
+        const normalizedVariantId = this.normalizeVariantId(variantIdRaw as any);
+        const identifierFields = mutationMode === 'update' && normalizedVariantId != null
+          ? { variantId: normalizedVariantId }
+          : {};
+
+        if (variantImageMode === 'legacy') {
+          return {
+            ...identifierFields,
+            variantName: variant.variantName,
+            description: variant.description,
+            price: variant.price,
+            swaps: Array.isArray(variant.swaps) ? variant.swaps : [],
+            ...(primaryImageUrl ? { imageUrl: primaryImageUrl } : {}),
+            ...(primaryImageUrl ? { ImageUrl: primaryImageUrl } : {}),
+          };
+        }
+
+        return {
+          ...identifierFields,
+          variantName: variant.variantName,
+          description: variant.description,
+          price: variant.price,
+          variantImageUrls: cleanedVariantImages,
+          primaryVariantImageIndex: safePrimaryIndex,
+          swaps: Array.isArray(variant.swaps) ? variant.swaps : [],
+          ...(primaryImageUrl ? { imageUrl: primaryImageUrl, ImageUrl: primaryImageUrl } : {}),
+        };
+      }),
+      addOnIds: this.sanitizeAddOnIds(payload.addOnIds),
+      newAddOns: this.sanitizeNewAddOns(payload.newAddOns),
+    };
+  }
+
+  private async sendPackageMutation(
+    method: 'POST' | 'PUT',
+    endpoint: string,
+    payload: {
+      packageName: string;
+      description: string;
+      categoryId: number;
+      packageImageUrls: string[];
+      primaryImageIndex: number;
+      action: string;
+      variants: {
+        variantId?: string | number;
+        packageVariantId?: string | number;
+        id?: string | number;
+        variantName: string;
+        description: string;
+        price: number;
+        imageUrl?: string;
+        variantImageUrls?: string[];
+        primaryVariantImageIndex?: number;
+        swaps?: {
+          originalItemName: string;
+          originalItemAllocatedPrice: number;
+          replacementItemName: string;
+          surcharge: number;
+          displayOrder: number;
+        }[];
+      }[];
+      addOnIds?: number[];
+      newAddOns?: {
+        addOnName: string;
+        description?: string;
+        price: number;
+        imageUrl?: string;
+        maxQtyPerOrder?: number;
+      }[];
+    },
+  ): Promise<any> {
+    const send = async (body: any) => {
+      const response = await fetchWithAuth(endpoint, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/plain, */*',
+        },
+        body: JSON.stringify(body),
+      });
+
+      const responseText = await response.text().catch(() => '');
+      return { response, responseText };
+    };
+
+    const mutationMode: 'create' | 'update' = method === 'PUT' ? 'update' : 'create';
+    const modernPayload = this.buildPackageMutationPayload(payload, 'modern', mutationMode);
+    let result = await send(modernPayload);
+
+    if (method === 'POST' && !result.response.ok && result.response.status === 400) {
+      const legacyPayload = this.buildPackageMutationPayload(payload, 'legacy', mutationMode);
+      const legacyResult = await send(legacyPayload);
+      if (legacyResult.response.ok) {
+        return legacyResult.responseText ? JSON.parse(legacyResult.responseText) : {};
+      }
+
+      const extractedLegacy = this.extractBackendErrorMessage(legacyResult.responseText);
+      throw new Error(extractedLegacy || legacyResult.responseText || `HTTP error! status: ${legacyResult.response.status}`);
+    }
+
+    if (!result.response.ok) {
+      const extracted = this.extractBackendErrorMessage(result.responseText);
+      throw new Error(extracted || result.responseText || `HTTP error! status: ${result.response.status}`);
+    }
+
+    return result.responseText ? JSON.parse(result.responseText) : {};
+  }
   /**
    * Lấy danh sách packages theo trạng thái từ endpoint by-status
    * @param status - Draft | Pending | Approved | Rejected | ''
@@ -340,11 +585,31 @@ class PackageService {
         if (!result.imageUrls && result.packageImages) {
           result.imageUrls = result.packageImages;
         }
+        if (!result.packageImages && result.imageUrls) {
+          result.packageImages = result.imageUrls;
+        }
         if (!result.packageVariants && result.variants) {
           result.packageVariants = result.variants;
         }
+        if (Array.isArray(result.packageVariants)) {
+          result.packageVariants = result.packageVariants.map((variant: any) => {
+            const variantImageUrls = variant.variantImageUrls || variant.imageUrls || [];
+            const primaryIndex = Number(variant.primaryVariantImageIndex ?? variant.primaryImageIndex ?? 0);
+            const imageUrl = variant.imageUrl || (Array.isArray(variantImageUrls) ? variantImageUrls[primaryIndex] || variantImageUrls[0] : undefined);
+            return {
+              ...variant,
+              variantImageUrls: Array.isArray(variantImageUrls) ? variantImageUrls : [],
+              imageUrls: Array.isArray(variantImageUrls) ? variantImageUrls : [],
+              imageUrl,
+              primaryVariantImageIndex: Number.isFinite(primaryIndex) && primaryIndex >= 0 ? primaryIndex : 0,
+            };
+          });
+        }
         if (result.packageId === undefined && result.id !== undefined) {
           result.packageId = result.id;
+        }
+        if (!result.availableAddOns && result.addOns) {
+          result.availableAddOns = result.addOns;
         }
         return result as ApiPackage;
       }
@@ -530,7 +795,10 @@ class PackageService {
           originalItemName: String(swap.originalItemName || swap.originalName || ''),
           replacementItemName: String(swap.replacementItemName || swap.replacementName || ''),
           surcharge: Number(swap.surcharge || 0),
-        })).filter((swap: any) => swap.swapId > 0)
+        })).filter((swap: any) => swap.swapId > 0),
+        minOrderQuantity: Number(variant.minOrderQuantity ?? 1),
+        maxOrderQuantity: Number(variant.maxOrderQuantity ?? 99),
+        productionWeight: Number(variant.productionWeight ?? 0),
       };
     });
 
@@ -693,41 +961,35 @@ class PackageService {
       packageImageUrls: string[];
       primaryImageIndex: number;
       action: string;
-      variants: { variantName: string; description: string; price: number }[];
+      variants: {
+        variantId?: string | number;
+        packageVariantId?: string | number;
+        id?: string | number;
+        variantName: string;
+        description: string;
+        price: number;
+        imageUrl?: string;
+        variantImageUrls?: string[];
+        primaryVariantImageIndex?: number;
+        swaps?: {
+          originalItemName: string;
+          originalItemAllocatedPrice: number;
+          replacementItemName: string;
+          surcharge: number;
+          displayOrder: number;
+        }[];
+      }[];
+      addOnIds?: number[];
+      newAddOns?: {
+        addOnName: string;
+        description?: string;
+        price: number;
+        imageUrl?: string;
+        maxQtyPerOrder?: number;
+      }[];
     }
   ): Promise<any> {
-    const token = getAuthToken();
-    const response = await fetch(`${API_BASE_URL}/packages/management/${id}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/plain, */*',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
-      const errText = await response.text();
-      try {
-        const errObj = JSON.parse(errText);
-        // Handle common backend error formats
-        if (errObj.errorMessages && Array.isArray(errObj.errorMessages) && errObj.errorMessages.length > 0) {
-          throw new Error(errObj.errorMessages[0]);
-        }
-        if (errObj.errors && typeof errObj.errors === 'object') {
-          const firstError = Object.values(errObj.errors)[0];
-          if (Array.isArray(firstError) && firstError.length > 0) throw new Error(firstError[0] as string);
-        }
-        if (errObj.message) throw new Error(errObj.message);
-        // Handle the specific format in screenshot: {"statusCode":"BadRequest", "errors": ["..."]}
-        if (Array.isArray(errObj.errors) && errObj.errors.length > 0) throw new Error(errObj.errors[0]);
-      } catch (e) {
-        if (e instanceof Error && e.name === 'Error' && e.message !== 'Unexpected token') throw e;
-      }
-      throw new Error(errText || `HTTP error! status: ${response.status}`);
-    }
-    const data: any = await response.json().catch(() => ({}));
-    return data;
+    return this.sendPackageMutation('PUT', `${API_BASE_URL}/packages/management/${id}`, payload);
   }
 
   /**
@@ -740,40 +1002,31 @@ class PackageService {
     packageImageUrls: string[];
     primaryImageIndex: number;
     action: string;
-    variants: { variantName: string; description: string; price: number }[];
+    variants: {
+      variantName: string;
+      description: string;
+      price: number;
+      imageUrl?: string;
+      variantImageUrls?: string[];
+      primaryVariantImageIndex?: number;
+      swaps?: {
+        originalItemName: string;
+        originalItemAllocatedPrice: number;
+        replacementItemName: string;
+        surcharge: number;
+        displayOrder: number;
+      }[];
+    }[];
+    addOnIds?: number[];
+    newAddOns?: {
+      addOnName: string;
+      description?: string;
+      price: number;
+      imageUrl?: string;
+      maxQtyPerOrder?: number;
+    }[];
   }): Promise<any> {
-    const token = getAuthToken();
-    const response = await fetch(`${API_BASE_URL}/packages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/plain, */*',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
-      const errText = await response.text();
-      try {
-        const errObj = JSON.parse(errText);
-        // Handle common backend error formats
-        if (errObj.errorMessages && Array.isArray(errObj.errorMessages) && errObj.errorMessages.length > 0) {
-          throw new Error(errObj.errorMessages[0]);
-        }
-        if (errObj.errors && typeof errObj.errors === 'object') {
-          const firstError = Object.values(errObj.errors)[0];
-          if (Array.isArray(firstError) && firstError.length > 0) throw new Error(firstError[0] as string);
-        }
-        if (errObj.message) throw new Error(errObj.message);
-        // Handle the specific format in screenshot: {"statusCode":"BadRequest", "errors": ["..."]}
-        if (Array.isArray(errObj.errors) && errObj.errors.length > 0) throw new Error(errObj.errors[0]);
-      } catch (e) {
-        if (e instanceof Error && e.name === 'Error' && e.message !== 'Unexpected token') throw e;
-      }
-      throw new Error(errText || `HTTP error! status: ${response.status}`);
-    }
-    const data: any = await response.json().catch(() => ({}));
-    return data;
+    return this.sendPackageMutation('POST', `${API_BASE_URL}/packages`, payload);
   }
 
   /**
