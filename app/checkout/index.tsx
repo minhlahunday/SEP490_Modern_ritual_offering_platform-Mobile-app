@@ -29,10 +29,9 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { checkoutService, CheckoutSummary, CheckoutRequest } from '../../services/checkoutService';
 import { addressService, CustomerAddress } from '../../services/addressService';
+import { shippingService, ShippingConfig } from '../../services/shippingService';
 import { getProfile, getCurrentUser } from '../../services/auth';
 import toast from '../../services/toast';
-
-const MIN_PREPARATION_HOURS = 60;
 
 export default function CheckoutScreen() {
   const router = useRouter();
@@ -43,13 +42,16 @@ export default function CheckoutScreen() {
   const [summary, setSummary] = useState<CheckoutSummary | null>(null);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [showAddressModal, setShowAddressModal] = useState(false);
+  const [shippingConfigs, setShippingConfigs] = useState<Map<string, ShippingConfig>>(new Map());
   
   const [deliveryDate, setDeliveryDate] = useState(new Date(Date.now() + 72 * 60 * 60 * 1000)); // Default +3 days
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [customTimeInput, setCustomTimeInput] = useState('');
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [timePickerHour, setTimePickerHour] = useState('09');
+  const [timePickerMinute, setTimePickerMinute] = useState('00');
+  const [timePickerPeriod, setTimePickerPeriod] = useState<'AM' | 'PM'>('AM');
   
-  const minDeliveryDate = new Date(Date.now() + MIN_PREPARATION_HOURS * 60 * 60 * 1000);
-  const maxDeliveryDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   const [paymentMethod, setPaymentMethod] = useState('PayOS');
   const [decorationNotes, setDecorationNotes] = useState<Record<number, string>>({});
   const [fullName, setFullName] = useState('');
@@ -67,6 +69,81 @@ export default function CheckoutScreen() {
     } as any);
   };
 
+  const timeToMinutes = (time: string) => {
+    const [hours, minutes] = time.split(':').map(Number);
+    return (hours * 60) + minutes;
+  };
+
+  const minutesToTimeString = (minutes: number) => {
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return `${String(hours).padStart(2, '0')}:${String(remainingMinutes).padStart(2, '0')}:00`;
+  };
+
+  const allowedTimeRange = () => {
+    let earliestTime = '07:00:00';
+    let latestTime = '19:00:00';
+
+    for (const config of shippingConfigs.values()) {
+      if (config.earliestDeliveryTime) {
+        earliestTime = config.earliestDeliveryTime > earliestTime ? config.earliestDeliveryTime : earliestTime;
+      }
+      if (config.latestDeliveryTime) {
+        latestTime = config.latestDeliveryTime < latestTime ? config.latestDeliveryTime : latestTime;
+      }
+    }
+
+    return {
+      earliestMinutes: timeToMinutes(earliestTime),
+      latestMinutes: timeToMinutes(latestTime),
+    };
+  };
+
+  const isTimeAllowed = (timeValue: string) => {
+    const minutes = timeToMinutes(timeValue);
+    const { earliestMinutes, latestMinutes } = allowedTimeRange();
+    return minutes >= earliestMinutes && minutes <= latestMinutes;
+  };
+
+  const getMinMaxDates = () => {
+    const now = new Date();
+    
+    let maxMinPreparationHours = 0;
+    let minMaxAdvanceBookingDays = 30;
+    
+    for (const config of shippingConfigs.values()) {
+      if (config.minPreparationHours && config.minPreparationHours > maxMinPreparationHours) {
+        maxMinPreparationHours = config.minPreparationHours;
+      }
+      if (config.maxAdvanceBookingDays && config.maxAdvanceBookingDays > 0) {
+        minMaxAdvanceBookingDays = Math.min(minMaxAdvanceBookingDays, config.maxAdvanceBookingDays);
+      }
+    }
+
+    const minDate = new Date(now);
+    minDate.setHours(0, 0, 0, 0);
+    const maxDate = new Date(now);
+    maxDate.setDate(now.getDate() + minMaxAdvanceBookingDays);
+    maxDate.setHours(23, 59, 59, 999);
+
+    return {
+      minDate,
+      maxDate,
+      maxMinPreparationHours,
+      minMaxAdvanceBookingDays
+    };
+  };
+
+  const formatDateDisplay = (date: Date): string => {
+    const options: Intl.DateTimeFormatOptions = { 
+      weekday: 'long', 
+      day: '2-digit', 
+      month: '2-digit', 
+      year: 'numeric' 
+    };
+    return date.toLocaleDateString('vi-VN', options);
+  };
+
   const normalizeDeliveryTime = (timeValue: string): string | null => {
     const value = String(timeValue || '').trim();
     const match = value.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
@@ -81,6 +158,42 @@ export default function CheckoutScreen() {
     }
 
     return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}`;
+  };
+
+  const openTimePicker = () => {
+    if (customTimeInput) {
+      const [h, m] = customTimeInput.split(':');
+      let hour = parseInt(h, 10) || 9;
+      const period = hour >= 12 ? 'PM' : 'AM';
+      if (hour > 12) hour -= 12;
+      if (hour === 0) hour = 12;
+      
+      setTimePickerHour(String(hour).padStart(2, '0'));
+      setTimePickerMinute(m || '00');
+      setTimePickerPeriod(period);
+    }
+    setShowTimePicker(true);
+  };
+
+  const confirmTimePicker = () => {
+    let h = parseInt(timePickerHour, 10);
+    if (timePickerPeriod === 'PM' && h !== 12) h += 12;
+    if (timePickerPeriod === 'AM' && h === 12) h = 0;
+    
+    const timeStr = `${String(h).padStart(2, '0')}:${timePickerMinute}`;
+    setCustomTimeInput(timeStr);
+    setShowTimePicker(false);
+  };
+
+  const getClockTimeLabel = (time: string) => {
+    if (!time) return '-- Chọn giờ --';
+    const [h, m] = time.split(':');
+    let hour = parseInt(h, 10);
+    if (isNaN(hour)) return time;
+    const period = hour >= 12 ? 'PM' : 'AM';
+    if (hour > 12) hour -= 12;
+    if (hour === 0) hour = 12;
+    return `${String(hour).padStart(2, '0')}:${m || '00'} ${period}`;
   };
 
   const formatDateLocalYmd = (date: Date): string => {
@@ -142,6 +255,26 @@ export default function CheckoutScreen() {
       setAddresses(addressList);
       if (summaryData) {
         setSummary(summaryData);
+
+        // Fetch shipping configs for all vendors
+        const vendors = Array.isArray(summaryData.vendorOrders)
+          ? summaryData.vendorOrders.map((v: any) => v.vendorId)
+          : [];
+        
+        const configMap = new Map<string, ShippingConfig>();
+        for (const vendorId of vendors) {
+          if (vendorId) {
+            try {
+              const config = await shippingService.getVendorShippingConfig(vendorId);
+              if (config) {
+                configMap.set(vendorId, config);
+              }
+            } catch (error) {
+              console.warn(`Failed to fetch shipping config for vendor ${vendorId}:`, error);
+            }
+          }
+        }
+        setShippingConfigs(configMap);
       } else {
         toast.error('Không tải được thông tin thanh toán');
         router.back();
@@ -202,6 +335,9 @@ export default function CheckoutScreen() {
     || parseCartItemIds().length
   );
 
+  const vendorList = Array.isArray(summary?.vendorOrders) ? summary.vendorOrders : (Array.isArray((summary as any)?.vendors) ? (summary as any).vendors : []);
+  const hasExceededDistance = vendorList.some((order: any) => order.shippingDistanceKm && order.shippingDistanceKm > 60);
+
   const handleSelectAddress = async (addrId: string | number) => {
     try {
       setLoading(true);
@@ -236,26 +372,40 @@ export default function CheckoutScreen() {
       return;
     }
 
-    // Always build delivery datetime from local date object to avoid parse drift.
+    // Always build delivery datetime from local date object
     const now = new Date();
     const [h, mins] = normalizedDeliveryTime.split(':').map(Number);
 
     const selectedDateTime = new Date(deliveryDate);
     selectedDateTime.setHours(h, mins, 0, 0);
 
+    const { minDate, maxDate, maxMinPreparationHours, minMaxAdvanceBookingDays } = getMinMaxDates();
     const diffInHours = (selectedDateTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 
-    if (diffInHours < 60) {
-      toast.error('Thời gian đặt hàng phải cách thời điểm hiện tại ít nhất 60 giờ để chuẩn bị.');
+    // Validate time is within allowed range
+    if (!isTimeAllowed(normalizedDeliveryTime)) {
+      toast.error('Vui lòng chọn giờ giao hàng hợp lệ');
       return;
     }
 
-    if (selectedDateTime > maxDeliveryDate) {
-      toast.error('Thời gian đặt hàng không được quá 1 tháng kể từ hiện tại.');
+    // Validate min preparation hours
+    if (diffInHours < maxMinPreparationHours) {
+      toast.error(`Thời gian đặt hàng phải cách thời điểm hiện tại ít nhất ${maxMinPreparationHours} giờ để chuẩn bị.`);
+      return;
+    }
+
+    // Validate max advance booking days
+    if (selectedDateTime > maxDate) {
+      toast.error(`Thời gian đặt hàng không được quá ${minMaxAdvanceBookingDays} ngày kể từ hiện tại.`);
       return;
     }
 
     if (!summary) return;
+
+    if (hasExceededDistance) {
+      toast.error('Khoảng cách giao hàng quá 60km. Vui lòng chọn địa chỉ giao hàng gần hơn hoặc chọn cửa hàng khác.');
+      return;
+    }
 
     const fallbackIds = parseCartItemIds();
     if (!summaryItems.length && fallbackIds.length === 0) {
@@ -387,15 +537,15 @@ export default function CheckoutScreen() {
             onPress={() => setShowDatePicker(true)}
           >
             <View style={styles.dateInfo}>
-              <Text style={styles.dateLabel}>Ngày giao hàng</Text>
+              <Text style={styles.dateLabel}>NGÀY GIAO HÀNG</Text>
               <Text style={styles.dateValue}>
-                {deliveryDate.toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}
+                {formatDateDisplay(deliveryDate)}
               </Text>
             </View>
-            <ChevronRight size={20} color="#9ca3af" />
+            <ChevronRight size={20} color="#fff" />
           </TouchableOpacity>
 
-          {showDatePicker && (
+        {showDatePicker && (
             <DateTimePicker
               value={deliveryDate}
               mode="date"
@@ -404,27 +554,24 @@ export default function CheckoutScreen() {
                 setShowDatePicker(false);
                 if (date) setDeliveryDate(date);
               }}
-              minimumDate={minDeliveryDate}
-              maximumDate={maxDeliveryDate}
+              minimumDate={getMinMaxDates().minDate}
+              maximumDate={getMinMaxDates().maxDate}
             />
           )}
 
-          <Text style={styles.subSectionTitle}>Giờ giao hàng</Text>
-          <View style={styles.customTimeInputWrap}>
-            <TextInput
-              style={styles.customTimeInput}
-              value={customTimeInput}
-              onChangeText={(text) => {
-                const clean = text.replace(/[^0-9:]/g, '').slice(0, 5);
-                setCustomTimeInput(clean);
-              }}
-              placeholder="HH:mm (VD: 14:30)"
-              placeholderTextColor="#9ca3af"
-              keyboardType="numbers-and-punctuation"
-              maxLength={5}
-            />
-            <Text style={styles.customTimeHint}>Khách có thể tự nhập giờ giao hàng theo định dạng HH:mm</Text>
-          </View>
+          <Text style={styles.subSectionTitle}>GIỜ GIAO HÀNG</Text>
+          <TouchableOpacity 
+            style={styles.timeSelectorBtn} 
+            onPress={openTimePicker}
+          >
+            <Text style={[styles.timeSelectorText, !customTimeInput && { color: '#9ca3af' }]}>
+              {getClockTimeLabel(customTimeInput)}
+            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <Text style={styles.timeSelectorHint}>CHỌN GIỜ</Text>
+              <ChevronRight size={16} color="#9ca3af" />
+            </View>
+          </TouchableOpacity>
         </View>
 
         {/* ITEMS & NOTES */}
@@ -500,6 +647,15 @@ export default function CheckoutScreen() {
           </View>
         </View>
 
+        {hasExceededDistance && (
+          <View style={{ marginHorizontal: 16, marginTop: 12, padding: 12, backgroundColor: '#fef2f2', borderColor: '#fee2e2', borderWidth: 1, borderRadius: 16, flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+            <AlertCircle size={16} color="#ef4444" style={{ marginTop: 2 }} />
+            <Text style={{ flex: 1, fontSize: 13, fontWeight: '700', color: '#dc2626', lineHeight: 20 }}>
+              Vượt quá phạm vi giao hàng 60km. Vui lòng kiểm tra lại địa chỉ.
+            </Text>
+          </View>
+        )}
+
       </ScrollView>
 
       {/* FOOTER ACTION */}
@@ -509,9 +665,9 @@ export default function CheckoutScreen() {
           <Text style={styles.footerTotalValue}>{summaryTotal.toLocaleString('vi-VN')}đ</Text>
         </View>
         <TouchableOpacity 
-          style={styles.placeOrderBtn}
+          style={[styles.placeOrderBtn, (processing || !summary.deliveryAddress || hasExceededDistance) && { backgroundColor: '#9ca3af' }]}
           onPress={handlePlaceOrder}
-          disabled={processing || !summary.deliveryAddress}
+          disabled={processing || !summary.deliveryAddress || hasExceededDistance}
         >
           {processing ? (
             <ActivityIndicator color="#fff" />
@@ -568,6 +724,100 @@ export default function CheckoutScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* TIME PICKER MODAL */}
+      <Modal visible={showTimePicker} animationType="fade" transparent>
+        <View style={styles.timePickerOverlay}>
+          <View style={styles.timePickerContainer}>
+            
+            {/* Top Section */}
+            <View style={styles.timePickerTop}>
+              <Text style={styles.timePickerTopLabel}>GIỜ GIAO HÀNG</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-end', marginTop: 8 }}>
+                <Text style={styles.timePickerTopTime}>
+                  {timePickerHour}:{timePickerMinute}
+                </Text>
+                <Text style={styles.timePickerTopPeriod}>{timePickerPeriod}</Text>
+              </View>
+              <Text style={styles.timePickerTopHint}>
+                Chọn giờ theo từng cột để chỉnh nhanh như form đồng hồ.
+              </Text>
+            </View>
+
+            {/* Bottom Section */}
+            <View style={styles.timePickerBottom}>
+              <View style={styles.timePickerHeaderRow}>
+                <View>
+                  <Text style={styles.timePickerBottomTitle}>CHỌN THỜI GIAN</Text>
+                  <Text style={styles.timePickerBottomSub}>Chọn giờ, phút và sáng / chiều</Text>
+                </View>
+                <TouchableOpacity onPress={() => setShowTimePicker(false)}>
+                  <Text style={{fontSize: 20, color: '#9ca3af', fontWeight: 'bold'}}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.timePickerColumns}>
+                {/* Hours */}
+                <View style={styles.timePickerColumn}>
+                  <Text style={styles.timePickerColTitle}>GIỜ</Text>
+                  <ScrollView style={styles.timePickerScroll} showsVerticalScrollIndicator={false}>
+                    {Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0')).map(h => (
+                      <TouchableOpacity 
+                        key={h} 
+                        style={[styles.timePickerItem, timePickerHour === h && styles.timePickerItemActive]}
+                        onPress={() => setTimePickerHour(h)}
+                      >
+                        <Text style={[styles.timePickerItemText, timePickerHour === h && styles.timePickerItemTextActive]}>{h}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+
+                {/* Minutes */}
+                <View style={styles.timePickerColumn}>
+                  <Text style={styles.timePickerColTitle}>PHÚT</Text>
+                  <ScrollView style={styles.timePickerScroll} showsVerticalScrollIndicator={false}>
+                    {Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0')).map(m => (
+                      <TouchableOpacity 
+                        key={m} 
+                        style={[styles.timePickerItem, timePickerMinute === m && styles.timePickerItemActive]}
+                        onPress={() => setTimePickerMinute(m)}
+                      >
+                        <Text style={[styles.timePickerItemText, timePickerMinute === m && styles.timePickerItemTextActive]}>{m}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+
+                {/* AM/PM */}
+                <View style={styles.timePickerColumn}>
+                  <Text style={styles.timePickerColTitle}>BUỔI</Text>
+                  <View style={{ gap: 8 }}>
+                    {(['AM', 'PM'] as const).map(p => (
+                      <TouchableOpacity 
+                        key={p} 
+                        style={[styles.timePickerPeriodBtn, timePickerPeriod === p && styles.timePickerPeriodBtnActive]}
+                        onPress={() => setTimePickerPeriod(p)}
+                      >
+                        <Text style={[styles.timePickerPeriodBtnText, timePickerPeriod === p && styles.timePickerPeriodBtnTextActive]}>{p}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.timePickerActions}>
+                <TouchableOpacity style={styles.timePickerCancelBtn} onPress={() => setShowTimePicker(false)}>
+                  <Text style={styles.timePickerCancelBtnText}>Hủy</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.timePickerConfirmBtn} onPress={confirmTimePicker}>
+                  <Text style={styles.timePickerConfirmBtnText}>Xác nhận</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -611,20 +861,20 @@ const styles = StyleSheet.create({
   dateLabel: { fontSize: 11, color: 'rgba(255,255,255,0.6)', fontWeight: '600', textTransform: 'uppercase' },
   dateValue: { fontSize: 15, color: '#fff', fontWeight: '800', marginTop: 2 },
   
-  subSectionTitle: { fontSize: 14, fontWeight: '700', color: '#64748b', marginTop: 16, marginBottom: 12 },
-  customTimeInputWrap: { marginBottom: 12 },
-  customTimeInput: {
-    backgroundColor: '#fff',
+  subSectionTitle: { fontSize: 11, fontWeight: '800', color: '#000', marginTop: 16, marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
+  timeInputContainer: { marginBottom: 12 },
+  timeInput: {
+    backgroundColor: '#f8fafc',
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
     color: '#0f172a',
-    fontWeight: '600',
+    fontWeight: '700',
   },
-  customTimeHint: { marginTop: 6, fontSize: 12, color: '#64748b' },
+  timeHint: { marginTop: 8, fontSize: 12, color: '#64748b', fontStyle: 'italic' },
 
   checkoutItemCard: { backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#f1f5f9', paddingVertical: 16 },
   itemMain: { flexDirection: 'row', gap: 12, marginBottom: 12 },
@@ -762,5 +1012,52 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     marginTop: 12 
   },
-  addAddressBtnText: { fontSize: 14, fontWeight: '700', color: '#64748b' }
+  addAddressBtnText: { fontSize: 14, fontWeight: '700', color: '#64748b' },
+
+  timeSelectorBtn: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+  },
+  timeSelectorText: { fontSize: 16, fontWeight: '700', color: '#0f172a' },
+  timeSelectorHint: { fontSize: 10, fontWeight: '800', color: '#64748b', letterSpacing: 1 },
+
+  timePickerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
+  timePickerContainer: { backgroundColor: '#fff', borderRadius: 24, overflow: 'hidden' },
+  timePickerTop: { backgroundColor: '#14b8a6', padding: 24, paddingBottom: 32 },
+  timePickerTopLabel: { fontSize: 10, fontWeight: '800', color: 'rgba(255,255,255,0.8)', letterSpacing: 2 },
+  timePickerTopTime: { fontSize: 48, fontWeight: '300', color: '#fff', lineHeight: 56 },
+  timePickerTopPeriod: { fontSize: 16, fontWeight: '600', color: '#fff', marginLeft: 8, marginBottom: 8 },
+  timePickerTopHint: { fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 12 },
+  
+  timePickerBottom: { padding: 20 },
+  timePickerHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 },
+  timePickerBottomTitle: { fontSize: 11, fontWeight: '800', color: '#000', letterSpacing: 1 },
+  timePickerBottomSub: { fontSize: 13, color: '#64748b', marginTop: 4 },
+  
+  timePickerColumns: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, marginBottom: 24 },
+  timePickerColumn: { flex: 1 },
+  timePickerColTitle: { fontSize: 10, fontWeight: '800', color: '#64748b', marginBottom: 8 },
+  timePickerScroll: { height: 160, backgroundColor: '#f8fafc', borderRadius: 12, padding: 4 },
+  timePickerItem: { paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
+  timePickerItemActive: { backgroundColor: '#000' },
+  timePickerItemText: { fontSize: 14, fontWeight: '700', color: '#334155' },
+  timePickerItemTextActive: { color: '#fff' },
+  
+  timePickerPeriodBtn: { paddingVertical: 16, alignItems: 'center', borderRadius: 12, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0' },
+  timePickerPeriodBtnActive: { backgroundColor: '#000', borderColor: '#000' },
+  timePickerPeriodBtnText: { fontSize: 13, fontWeight: '900', color: '#475569', letterSpacing: 1 },
+  timePickerPeriodBtnTextActive: { color: '#fff' },
+  
+  timePickerActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 8 },
+  timePickerCancelBtn: { paddingVertical: 12, paddingHorizontal: 20, borderRadius: 12, backgroundColor: '#f1f5f9' },
+  timePickerCancelBtnText: { fontSize: 14, fontWeight: '700', color: '#475569' },
+  timePickerConfirmBtn: { paddingVertical: 12, paddingHorizontal: 20, borderRadius: 12, backgroundColor: '#000' },
+  timePickerConfirmBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' }
 });
