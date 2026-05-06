@@ -12,7 +12,7 @@ import {
   ActivityIndicator,
   Image
 } from 'react-native';
-import { X, AlertCircle, Plus, Square, CheckSquare } from 'lucide-react-native';
+import { X, AlertCircle, Plus, Square, CheckSquare, Circle, CheckCircle2 } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { refundService } from '../services/refundService';
 import { Order } from '../services/orderService';
@@ -25,41 +25,72 @@ interface RefundModalProps {
   order: Order;
 }
 
+const typeConfig = [
+  { id: 'Full', label: 'Hoàn toàn bộ', desc: 'Hoàn 100% đơn hàng' },
+  { id: 'SpecificItems', label: 'Các sản phẩm cụ thể', desc: 'Chọn đơn hàng bạn muốn hoàn' },
+  { id: 'PartialItem', label: 'Hoàn một phần', desc: 'Chọn 1 đơn hàng và thương lượng giá' },
+] as const;
+
 export default function RefundModal({ isOpen, onClose, onSuccess, order }: RefundModalProps) {
+  const [refundType, setRefundType] = useState<'Full' | 'SpecificItems' | 'PartialItem'>('Full');
   const [reason, setReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [proofImages, setProofImages] = useState<Array<{ uri: string; name: string; type: string }>>([]);
 
+  const [targetItemId, setTargetItemId] = useState<string>('');
+  const [targetMaxAmount, setTargetMaxAmount] = useState<number>(0);
+  const [partialAmountStr, setPartialAmountStr] = useState<string>('');
+
   const getOrderItemId = (item: any): string => String(item?.reviewItemId || item?.itemId || '').trim();
 
-  useEffect(() => {
-    if (!isOpen) return;
+  const getOrderItemTotal = (item: any) => {
+    const qty = Number(item?.quantity || 1) || 1;
+    const unit = Number(item?.price || item?.unitPrice || item?.variantPrice || 0) || 0;
+    const basePrice = unit * qty;
+    
+    const swapTotal = (item?.swaps || []).reduce((sum: number, sw: any) => sum + (Number(sw.surcharge) || 0), 0);
+    const addOnTotal = (item?.addOns || []).reduce((sum: number, ad: any) => sum + (Number(ad.lineTotal) || 0), 0);
+    
+    const calculated = basePrice + swapTotal + addOnTotal;
+    const apiTotal = Number(item?.lineTotal || item?.totalPrice) || 0;
+    
+    return Math.max(calculated, apiTotal);
+  };
 
-    const defaultIds = (order?.items || [])
-      .map((item: any) => getOrderItemId(item))
-      .filter((id: string) => id.length > 0);
-    setSelectedItemIds(defaultIds);
-    setReason('');
-    setProofImages([]);
-  }, [isOpen, order?.orderId]);
+  useEffect(() => {
+    if (!isOpen) {
+      setRefundType('Full');
+      setReason('');
+      setSelectedItemIds([]);
+      setTargetItemId('');
+      setPartialAmountStr('');
+      setProofImages([]);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    setSelectedItemIds([]);
+    setTargetItemId('');
+    setTargetMaxAmount(0);
+    setPartialAmountStr('');
+  }, [refundType]);
 
   const selectedAmount = useMemo(() => {
+    if (refundType === 'Full') return order?.pricing?.finalAmount || order?.pricing?.totalAmount || 0;
+    if (refundType === 'PartialItem') {
+      const parsed = parseInt(partialAmountStr.replace(/\D/g, ''), 10);
+      return isNaN(parsed) ? 0 : parsed;
+    }
     return (order?.items || []).reduce((sum, item: any) => {
       const id = getOrderItemId(item);
       if (!selectedItemIds.includes(id)) return sum;
-
-      const qty = Number(item?.quantity || 1) || 1;
-      const unit = Number(item?.price || item?.unitPrice || item?.variantPrice || 0) || 0;
-      const line = Number(item?.lineTotal || item?.totalPrice || unit * qty) || 0;
-      return sum + line;
+      return sum + getOrderItemTotal(item);
     }, 0);
-  }, [order?.items, selectedItemIds]);
+  }, [order?.items, order?.pricing, selectedItemIds, refundType, partialAmountStr]);
 
   const allSelectableIds = useMemo(() => {
-    return (order?.items || [])
-      .map((item: any) => getOrderItemId(item))
-      .filter((id: string) => id.length > 0);
+    return (order?.items || []).map((item: any) => getOrderItemId(item)).filter((id: string) => id.length > 0);
   }, [order?.items]);
 
   const isAllSelected = allSelectableIds.length > 0 && allSelectableIds.every((id) => selectedItemIds.includes(id));
@@ -70,6 +101,12 @@ export default function RefundModal({ isOpen, onClose, onSuccess, order }: Refun
 
   const toggleSelectAll = () => {
     setSelectedItemIds(isAllSelected ? [] : allSelectableIds);
+  };
+
+  const selectTargetItem = (id: string, maxAmount: number) => {
+    setTargetItemId(id);
+    setTargetMaxAmount(maxAmount);
+    setPartialAmountStr(Math.max(0, maxAmount - 1000).toString());
   };
 
   const handlePickImage = async () => {
@@ -97,7 +134,7 @@ export default function RefundModal({ isOpen, onClose, onSuccess, order }: Refun
       setProofImages((prev) => {
         const merged = [...prev, ...mapped];
         const unique = merged.filter((img, idx, arr) => arr.findIndex((x) => x.uri === img.uri) === idx);
-        return unique.slice(0, 5);
+        return unique.slice(0, 10);
       });
     } catch {
       toast.error('Không thể chọn ảnh');
@@ -109,6 +146,27 @@ export default function RefundModal({ isOpen, onClose, onSuccess, order }: Refun
   };
 
   const handleSubmit = async () => {
+    if (refundType === 'SpecificItems' && selectedItemIds.length === 0) {
+      toast.error('Vui lòng chọn ít nhất 1 sản phẩm cần hoàn tiền');
+      return;
+    }
+
+    if (refundType === 'PartialItem') {
+      if (!targetItemId) {
+        toast.error('Vui lòng chọn một món để thương lượng');
+        return;
+      }
+      const partialAmount = parseInt(partialAmountStr.replace(/\D/g, ''), 10);
+      if (isNaN(partialAmount) || partialAmount <= 0) {
+        toast.error('Số tiền thương lượng phải lớn hơn 0');
+        return;
+      }
+      if (partialAmount >= targetMaxAmount) {
+        toast.error(`Số tiền phải nhỏ hơn ${targetMaxAmount.toLocaleString('vi-VN')}đ`);
+        return;
+      }
+    }
+
     if (!reason.trim()) {
       toast.error('Vui lòng nhập lý do hoàn tiền');
       return;
@@ -119,18 +177,18 @@ export default function RefundModal({ isOpen, onClose, onSuccess, order }: Refun
       return;
     }
 
-    if (selectedItemIds.length === 0) {
-      toast.error('Vui lòng chọn ít nhất 1 sản phẩm cần hoàn tiền');
-      return;
-    }
-
     setSubmitting(true);
     try {
+      const partialAmount = parseInt(partialAmountStr.replace(/\D/g, ''), 10) || 0;
+
       const result = await refundService.createRefund({
         orderId: order.orderId,
         reason: reason.trim(),
         proofImages,
-        createRefundItems: selectedItemIds.map((id) => ({ orderItemId: id })),
+        refundType,
+        createRefundItems: refundType === 'SpecificItems' ? selectedItemIds.map((id) => ({ orderItemId: id })) : undefined,
+        targetItemId: refundType === 'PartialItem' ? targetItemId : undefined,
+        partialAmount: refundType === 'PartialItem' ? partialAmount : undefined,
       });
 
       if (result.success) {
@@ -165,42 +223,178 @@ export default function RefundModal({ isOpen, onClose, onSuccess, order }: Refun
             <View style={styles.warningBox}>
               <AlertCircle size={20} color="#000" />
               <Text style={styles.warningText}>
-                Yêu cầu hoàn tiền chỉ được chấp nhận trong vòng 2 giờ sau khi đơn hàng được giao.
+                Đơn hàng #{order?.orderId?.substring(0, 8).toUpperCase()}
               </Text>
             </View>
 
-            <View style={styles.sectionRow}>
-              <Text style={styles.sectionTitle}>Chọn sản phẩm hoàn tiền</Text>
-              <TouchableOpacity onPress={toggleSelectAll}>
-                <Text style={styles.selectAllText}>{isAllSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}</Text>
-              </TouchableOpacity>
+            <Text style={styles.label}>Loại hoàn tiền</Text>
+            <View style={styles.typeContainer}>
+              {typeConfig.map((type) => {
+                const isActive = refundType === type.id;
+                return (
+                  <TouchableOpacity
+                    key={type.id}
+                    onPress={() => setRefundType(type.id)}
+                    style={[styles.typeCard, isActive && styles.typeCardActive]}
+                  >
+                    {isActive && (
+                      <View style={styles.checkIconBadge}>
+                        <CheckCircle2 size={12} color="#f97316" />
+                      </View>
+                    )}
+                    <Text style={[styles.typeLabel, isActive && styles.typeLabelActive]}>{type.label}</Text>
+                    <Text style={[styles.typeDesc, isActive && styles.typeDescActive]}>{type.desc}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
-            {(order?.items || []).map((item: any, idx: number) => {
-              const itemId = getOrderItemId(item);
-              if (!itemId) return null;
+            {refundType === 'SpecificItems' && (
+              <View style={styles.sectionMargin}>
+                <View style={styles.sectionRow}>
+                  <Text style={styles.label}>Chọn sản phẩm hoàn tiền</Text>
+                  <TouchableOpacity onPress={toggleSelectAll}>
+                    <Text style={styles.selectAllText}>{isAllSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}</Text>
+                  </TouchableOpacity>
+                </View>
 
-              const qty = Number(item?.quantity || 1) || 1;
-              const unit = Number(item?.price || item?.unitPrice || item?.variantPrice || 0) || 0;
-              const lineTotal = Number(item?.lineTotal || item?.totalPrice || unit * qty) || 0;
-              const selected = selectedItemIds.includes(itemId);
+                {(order?.items || []).map((item: any, idx: number) => {
+                  const itemId = getOrderItemId(item);
+                  if (!itemId) return null;
 
-              return (
-                <TouchableOpacity key={`${itemId}-${idx}`} style={styles.itemSelectRow} onPress={() => toggleItem(itemId)}>
-                  {selected ? <CheckSquare size={20} color="#111827" /> : <Square size={20} color="#9ca3af" />}
-                  <View style={styles.itemSelectMeta}>
-                    <Text style={styles.itemSelectName} numberOfLines={2}>{item.packageName}</Text>
-                    <Text style={styles.itemSelectVariant}>Gói {item.variantName} x{qty}</Text>
+                  const qty = Number(item?.quantity || 1) || 1;
+                  const lineTotal = getOrderItemTotal(item);
+                  const selected = selectedItemIds.includes(itemId);
+
+                  const hasExtras = item?.swaps?.length > 0 || item?.addOns?.length > 0;
+
+                  return (
+                    <View key={`${itemId}-${idx}`} style={[styles.itemCard, selected && styles.itemCardActive]}>
+                      <TouchableOpacity style={[styles.itemSelectRow, selected && styles.itemSelectRowActive]} onPress={() => toggleItem(itemId)}>
+                        {selected ? <CheckSquare size={20} color="#f97316" /> : <Square size={20} color="#d1d5db" />}
+                        <View style={styles.itemSelectMeta}>
+                          <Text style={styles.itemSelectName} numberOfLines={2}>{item.packageName}</Text>
+                          <Text style={styles.itemSelectVariant}>Gói {item.variantName} x{qty}</Text>
+                        </View>
+                        <Text style={styles.itemSelectPrice}>{lineTotal.toLocaleString('vi-VN')}đ</Text>
+                      </TouchableOpacity>
+
+                      {hasExtras && (
+                        <View style={styles.extrasBox}>
+                          {(item.swaps || []).map((sw: any, i: number) => (
+                            <View key={`sw-${i}`} style={styles.extraRow}>
+                              <View style={styles.dotAmber} />
+                              <Text style={styles.extraTextAmber} numberOfLines={2}>
+                                {sw.replacementDescription || `${sw.originalItemName} -> ${sw.replacementItemName}`}
+                              </Text>
+                              {sw.surcharge > 0 && (
+                                <Text style={styles.extraPriceAmber}>+{sw.surcharge.toLocaleString('vi-VN')}đ</Text>
+                              )}
+                            </View>
+                          ))}
+                          {(item.addOns || []).map((ad: any, i: number) => (
+                            <View key={`ad-${i}`} style={styles.extraRow}>
+                              <View style={styles.dotEmerald} />
+                              <Text style={styles.extraTextEmerald} numberOfLines={2}>
+                                + {ad.addOnName || ad.itemName} x{ad.quantity}
+                              </Text>
+                              <Text style={styles.extraPriceEmerald}>{(ad.lineTotal || 0).toLocaleString('vi-VN')}đ</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+                  );
+                })}
+
+                {selectedItemIds.length > 0 && (
+                  <View style={styles.expectedRefundBox}>
+                    <Text style={styles.expectedRefundLabel}>
+                      Dự kiến hoàn ({selectedItemIds.length} sản phẩm)
+                    </Text>
+                    <Text style={styles.expectedRefundValue}>
+                      {selectedAmount.toLocaleString('vi-VN')}đ
+                    </Text>
                   </View>
-                  <Text style={styles.itemSelectPrice}>{lineTotal.toLocaleString('vi-VN')}đ</Text>
-                </TouchableOpacity>
-              );
-            })}
+                )}
+              </View>
+            )}
+
+            {refundType === 'PartialItem' && (
+              <View style={styles.sectionMargin}>
+                <Text style={styles.label}>Chọn sản phẩm thương lượng</Text>
+                {(order?.items || []).map((item: any, idx: number) => {
+                  const itemId = getOrderItemId(item);
+                  if (!itemId) return null;
+
+                  const qty = Number(item?.quantity || 1) || 1;
+                  const lineTotal = getOrderItemTotal(item);
+                  const selected = targetItemId === itemId;
+
+                  const hasExtras = item?.swaps?.length > 0 || item?.addOns?.length > 0;
+
+                  return (
+                    <View key={`${itemId}-${idx}`} style={[styles.itemCard, selected && styles.itemCardActive]}>
+                      <TouchableOpacity style={[styles.itemSelectRow, selected && styles.itemSelectRowActive]} onPress={() => selectTargetItem(itemId, lineTotal)}>
+                        {selected ? <Circle size={20} color="#f97316" fill="#f97316" /> : <Circle size={20} color="#d1d5db" />}
+                        <View style={styles.itemSelectMeta}>
+                          <Text style={styles.itemSelectName} numberOfLines={2}>{item.packageName}</Text>
+                          <Text style={styles.itemSelectVariant}>Gói {item.variantName} x{qty}</Text>
+                        </View>
+                        <Text style={styles.itemSelectPrice}>{lineTotal.toLocaleString('vi-VN')}đ</Text>
+                      </TouchableOpacity>
+
+                      {hasExtras && (
+                        <View style={styles.extrasBox}>
+                          {(item.swaps || []).map((sw: any, i: number) => (
+                            <View key={`sw-${i}`} style={styles.extraRow}>
+                              <View style={styles.dotAmber} />
+                              <Text style={styles.extraTextAmber} numberOfLines={2}>
+                                {sw.replacementDescription || `${sw.originalItemName} -> ${sw.replacementItemName}`}
+                              </Text>
+                              {sw.surcharge > 0 && (
+                                <Text style={styles.extraPriceAmber}>+{sw.surcharge.toLocaleString('vi-VN')}đ</Text>
+                              )}
+                            </View>
+                          ))}
+                          {(item.addOns || []).map((ad: any, i: number) => (
+                            <View key={`ad-${i}`} style={styles.extraRow}>
+                              <View style={styles.dotEmerald} />
+                              <Text style={styles.extraTextEmerald} numberOfLines={2}>
+                                + {ad.addOnName || ad.itemName} x{ad.quantity}
+                              </Text>
+                              <Text style={styles.extraPriceEmerald}>{(ad.lineTotal || 0).toLocaleString('vi-VN')}đ</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+                  );
+                })}
+
+                {targetItemId !== '' && (
+                  <View style={{ marginTop: 16 }}>
+                    <Text style={styles.label}>Số tiền thương lượng</Text>
+                    <View style={styles.partialInputWrapper}>
+                      <TextInput
+                        style={styles.partialInput}
+                        keyboardType="numeric"
+                        value={partialAmountStr ? Number(partialAmountStr).toLocaleString('vi-VN') : ''}
+                        onChangeText={(t) => setPartialAmountStr(t.replace(/\D/g, ''))}
+                        placeholder="Nhập số tiền..."
+                      />
+                      <Text style={styles.currencySymbol}>đ</Text>
+                    </View>
+                    <Text style={styles.hintText}>* Phải nhỏ hơn {targetMaxAmount.toLocaleString('vi-VN')}đ</Text>
+                  </View>
+                )}
+              </View>
+            )}
 
             <Text style={styles.label}>Lý do hoàn tiền</Text>
             <TextInput
               style={styles.input}
-              placeholder="Nhập lý do cụ thể (vd: giao thiếu đồ, hàng không đúng mô tả...)"
+              placeholder="Nhập lý do cụ thể..."
               multiline
               numberOfLines={4}
               value={reason}
@@ -219,7 +413,7 @@ export default function RefundModal({ isOpen, onClose, onSuccess, order }: Refun
                 </View>
               ))}
 
-              {proofImages.length < 5 && (
+              {proofImages.length < 10 && (
                 <TouchableOpacity style={styles.addImageBtn} onPress={handlePickImage}>
                   <Plus size={20} color="#94a3b8" />
                   <Text style={styles.addImageText}>Tải lên</Text>
@@ -228,9 +422,9 @@ export default function RefundModal({ isOpen, onClose, onSuccess, order }: Refun
             </View>
 
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>Số tiền hoàn lại:</Text>
+              <Text style={styles.infoLabel}>Dự kiến hoàn lại:</Text>
               <Text style={styles.infoValue}>
-                {(selectedAmount || order.pricing?.finalAmount || order.pricing?.totalAmount || 0).toLocaleString('vi-VN')}đ
+                {selectedAmount.toLocaleString('vi-VN')}đ
               </Text>
             </View>
           </ScrollView>
@@ -264,14 +458,14 @@ export default function RefundModal({ isOpen, onClose, onSuccess, order }: Refun
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
     justifyContent: 'flex-end',
   },
   content: {
     backgroundColor: '#fff',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: '80%',
+    maxHeight: '90%',
     paddingBottom: Platform.OS === 'ios' ? 40 : 20,
   },
   header: {
@@ -284,8 +478,8 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 18,
-    fontWeight: 'bold',
-    color: '#000',
+    fontWeight: '900',
+    color: '#111827',
   },
   closeBtn: {
     padding: 4,
@@ -295,7 +489,7 @@ const styles = StyleSheet.create({
   },
   warningBox: {
     flexDirection: 'row',
-    backgroundColor: '#f3f4f6',
+    backgroundColor: '#f8fafc',
     padding: 12,
     borderRadius: 12,
     alignItems: 'center',
@@ -304,9 +498,54 @@ const styles = StyleSheet.create({
   },
   warningText: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: '700',
     color: '#4b5563',
-    lineHeight: 18,
+  },
+  typeContainer: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 20,
+  },
+  typeCard: {
+    flex: 1,
+    borderWidth: 2,
+    borderColor: '#e5e7eb',
+    borderRadius: 16,
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff',
+  },
+  typeCardActive: {
+    borderColor: '#f97316',
+    backgroundColor: '#fff7ed',
+  },
+  typeLabel: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#374151',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  typeLabelActive: {
+    color: '#f97316',
+  },
+  typeDesc: {
+    fontSize: 10,
+    color: '#9ca3af',
+    textAlign: 'center',
+  },
+  typeDescActive: {
+    color: '#fdba74',
+  },
+  checkIconBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+  },
+  sectionMargin: {
+    marginBottom: 20,
   },
   sectionRow: {
     flexDirection: 'row',
@@ -314,25 +553,31 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 10,
   },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#111827',
-  },
   selectAllText: {
-    color: '#111827',
+    color: '#f97316',
     fontSize: 13,
     fontWeight: '700',
+  },
+  itemCard: {
+    borderWidth: 2,
+    borderColor: '#e5e7eb',
+    borderRadius: 12,
+    marginBottom: 8,
+    backgroundColor: '#fff',
+    overflow: 'hidden',
+  },
+  itemCardActive: {
+    borderColor: '#f97316',
   },
   itemSelectRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 12,
-    padding: 10,
-    gap: 10,
-    marginBottom: 8,
+    padding: 12,
+    gap: 12,
+    backgroundColor: '#fff',
+  },
+  itemSelectRowActive: {
+    backgroundColor: '#fff7ed',
   },
   itemSelectMeta: {
     flex: 1,
@@ -352,49 +597,120 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#111827',
   },
+  extrasBox: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#f3f4f6',
+    backgroundColor: '#f8fafc',
+    gap: 6,
+  },
+  extraRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dotAmber: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#fbbf24',
+  },
+  extraTextAmber: {
+    flex: 1,
+    fontSize: 11,
+    color: '#b45309',
+  },
+  extraPriceAmber: {
+    fontSize: 11,
+    color: '#f59e0b',
+  },
+  dotEmerald: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#34d399',
+  },
+  extraTextEmerald: {
+    flex: 1,
+    fontSize: 11,
+    color: '#047857',
+  },
+  extraPriceEmerald: {
+    fontSize: 11,
+    color: '#10b981',
+  },
+  partialInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 12,
+    backgroundColor: '#f9fafb',
+    paddingHorizontal: 16,
+  },
+  partialInput: {
+    flex: 1,
+    paddingVertical: 14,
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#111827',
+  },
+  currencySymbol: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#9ca3af',
+  },
+  hintText: {
+    fontSize: 12,
+    color: '#ea580c',
+    marginTop: 6,
+    fontWeight: '500',
+  },
   label: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#374151',
-    marginBottom: 8,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 12,
   },
   input: {
     backgroundColor: '#f9fafb',
     borderWidth: 1,
     borderColor: '#e5e7eb',
     borderRadius: 12,
-    padding: 12,
+    padding: 16,
     fontSize: 14,
-    minHeight: 100,
+    minHeight: 120,
     marginBottom: 20,
   },
   imagesWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 12,
     marginBottom: 20,
   },
   addImageBtn: {
-    width: 84,
-    height: 84,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
+    width: 80,
+    height: 80,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
     borderStyle: 'dashed',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#f8fafc',
   },
   addImageText: {
-    marginTop: 6,
+    marginTop: 4,
     color: '#64748b',
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
   },
   previewItem: {
-    width: 84,
-    height: 84,
-    borderRadius: 14,
+    width: 80,
+    height: 80,
+    borderRadius: 16,
     overflow: 'hidden',
     position: 'relative',
     backgroundColor: '#e5e7eb',
@@ -405,12 +721,12 @@ const styles = StyleSheet.create({
   },
   removeImageBtn: {
     position: 'absolute',
-    top: 4,
-    right: 4,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: 'rgba(15,23,42,0.82)',
+    top: 6,
+    right: 6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(239,68,68,0.9)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -418,47 +734,73 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 16,
     borderTopWidth: 1,
     borderTopColor: '#f3f4f6',
+    marginBottom: 20,
   },
   infoLabel: {
     fontSize: 14,
-    color: '#6b7280',
+    fontWeight: '700',
+    color: '#64748b',
   },
   infoValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#000',
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#f97316',
+  },
+  expectedRefundBox: {
+    marginTop: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#f3f4f6',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 16,
+  },
+  expectedRefundLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#4b5563',
+  },
+  expectedRefundValue: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#111827',
   },
   footer: {
     flexDirection: 'row',
     padding: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#f3f4f6',
+    backgroundColor: '#fafafa',
     gap: 12,
   },
   cancelBtn: {
     flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 16,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: '#e5e7eb',
     alignItems: 'center',
+    backgroundColor: '#fff',
   },
   cancelBtnText: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#374151',
+    fontWeight: '700',
+    color: '#4b5563',
   },
   submitBtn: {
     flex: 2,
     backgroundColor: '#000',
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 16,
+    borderRadius: 16,
     alignItems: 'center',
   },
   submitBtnText: {
     fontSize: 15,
-    fontWeight: 'bold',
+    fontWeight: '800',
     color: '#fff',
   },
 });

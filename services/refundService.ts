@@ -5,11 +5,16 @@ export interface CreateRefundItem {
   orderItemId: string;
 }
 
+export type RefundType = 'Full' | 'SpecificItems' | 'PartialItem';
+
 export interface RefundRequest {
   orderId: string;
   reason: string;
   proofImages: Array<any>;
-  createRefundItems: CreateRefundItem[];
+  createRefundItems?: CreateRefundItem[];
+  refundType: RefundType;
+  targetItemId?: string;
+  partialAmount?: number;
 }
 
 export interface CreateRefundResult {
@@ -218,14 +223,25 @@ class RefundService {
       const formData = new FormData();
       formData.append('OrderId', request.orderId);
       formData.append('Reason', request.reason);
+      formData.append('RefundType', request.refundType);
 
       request.proofImages.forEach((file) => {
         formData.append('ProofImages', file as any);
       });
 
-      request.createRefundItems.forEach((item) => {
-        formData.append('ItemIds', item.orderItemId);
-      });
+      if (request.createRefundItems && request.createRefundItems.length > 0) {
+        request.createRefundItems.forEach((item) => {
+          formData.append('ItemIds', item.orderItemId);
+        });
+      }
+
+      if (request.targetItemId) {
+        formData.append('TargetItemId', request.targetItemId);
+      }
+
+      if (request.partialAmount !== undefined) {
+        formData.append('PartialAmount', request.partialAmount.toString());
+      }
 
       const response = await fetch(`${API_BASE_URL}/refunds`, {
         method: 'POST',
@@ -271,6 +287,7 @@ class RefundService {
         reason,
         proofImages: [],
         createRefundItems: [],
+        refundType: 'Full'
       });
       return result.success;
     } catch {
