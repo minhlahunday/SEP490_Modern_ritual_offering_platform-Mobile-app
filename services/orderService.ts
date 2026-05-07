@@ -378,12 +378,12 @@ class OrderService {
         deliveryTime: String(raw?.delivery?.deliveryTime || raw?.deliveryTime || ''),
         customerName: String(raw?.delivery?.customerName || raw?.customer?.fullName || ''),
         customerPhone: String(raw?.delivery?.customerPhone || raw?.customer?.phoneNumber || ''),
-        preparationProofImages: Array.isArray(raw?.delivery?.preparationProofImages)
-          ? raw.delivery.preparationProofImages
-          : (Array.isArray(raw?.delivery?.preparationProofImageUrl) ? raw.delivery.preparationProofImageUrl : []),
-        deliveryProofImages: Array.isArray(raw?.delivery?.deliveryProofImages)
-          ? raw.delivery.deliveryProofImages
-          : (Array.isArray(raw?.delivery?.deliveryProofImageUrl) ? raw.delivery.deliveryProofImageUrl : []),
+        preparationProofImages: []
+          .concat(raw?.delivery?.preparationProofImages || raw?.delivery?.preparationProofImageUrl || [])
+          .filter((url: any) => typeof url === 'string' && url.trim().length > 0),
+        deliveryProofImages: []
+          .concat(raw?.delivery?.deliveryProofImages || raw?.delivery?.deliveryProofImageUrl || [])
+          .filter((url: any) => typeof url === 'string' && url.trim().length > 0),
       },
       customer: {
         fullName: String(raw?.customer?.fullName || raw?.delivery?.customerName || ''),
@@ -657,6 +657,7 @@ class OrderService {
       };
 
       const candidates = [
+        `${API_BASE_URL}/orders/customer/${encodeURIComponent(normalizedOrderId)}`,
         `${API_BASE_URL}/orders/${encodeURIComponent(normalizedOrderId)}`,
         `${API_BASE_URL}/orders/detail/${encodeURIComponent(normalizedOrderId)}`,
         `${API_BASE_URL}/orders?orderId=${encodeURIComponent(normalizedOrderId)}`,
