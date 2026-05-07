@@ -32,6 +32,8 @@ import {
   Star
 } from 'lucide-react-native';
 import { orderService, Order } from '../../services/orderService';
+import { API_BASE_URL } from '../../services/api';
+import { getAuthToken } from '../../services/auth';
 import { refundService, RefundRecord } from '../../services/refundService';
 import { vendorService } from '../../services/vendorService';
 import { reviewService } from '../../services/reviewService';
@@ -507,21 +509,73 @@ export default function OrderDetailsScreen() {
   };
 
   const openProofImage = async (type: 'preparation' | 'delivery') => {
-    const latest = await orderService.getOrderDetails(id as string).catch(() => null);
-    const source = latest || order;
+    const extractUrls = (val: any): string[] => {
+      if (Array.isArray(val)) return val.filter((u: any) => typeof u === 'string' && u.trim().length > 0);
+      if (typeof val === 'string' && val.trim().length > 0) return [val.trim()];
+      return [];
+    };
 
-    if (latest) {
-      setOrder(latest);
+    const collectFromObj = (obj: any): { prep: string[]; delivery: string[] } => {
+      if (!obj || typeof obj !== 'object') return { prep: [], delivery: [] };
+      const prep = [
+        ...extractUrls(obj?.delivery?.preparationProofImageUrl),
+        ...extractUrls(obj?.delivery?.preparationProofImages),
+        ...extractUrls(obj?.preparationProofImageUrl),
+        ...extractUrls(obj?.preparationProofImages),
+      ];
+      const del = [
+        ...extractUrls(obj?.delivery?.deliveryProofImageUrl),
+        ...extractUrls(obj?.delivery?.deliveryProofImages),
+        ...extractUrls(obj?.deliveryProofImageUrl),
+        ...extractUrls(obj?.deliveryProofImages),
+      ];
+      return { prep, delivery: del };
+    };
+
+    // Step 1: try a direct raw API call so we get the original JSON without normalization
+    let rawPrep: string[] = [];
+    let rawDel: string[] = [];
+    try {
+      const token = getAuthToken();
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
+      const encodedId = encodeURIComponent(id as string);
+      // /orders/customer/{id} is the correct endpoint per API spec
+      const endpoints = [
+        `${API_BASE_URL}/orders/customer/${encodedId}`,
+        `${API_BASE_URL}/orders/${encodedId}`,
+        `${API_BASE_URL}/orders/detail/${encodedId}`,
+      ];
+      for (const url of endpoints) {
+        try {
+          const res = await fetch(url, { headers });
+          if (!res.ok) continue;
+          const json = await res.json().catch(() => null);
+          const result = json?.result ?? json;
+          const c = collectFromObj(result);
+          if (c.prep.length > 0 || c.delivery.length > 0) {
+            rawPrep = c.prep;
+            rawDel = c.delivery;
+            break;
+          }
+        } catch {
+          // try next
+        }
+      }
+    } catch {
+      // ignore, fallback below
     }
 
-    const preparationProofImages = Array.isArray(source?.delivery?.preparationProofImages)
-      ? source.delivery.preparationProofImages.filter((url) => typeof url === 'string' && url.trim().length > 0)
-      : [];
-    const deliveryProofImages = Array.isArray(source?.delivery?.deliveryProofImages)
-      ? source.delivery.deliveryProofImages.filter((url) => typeof url === 'string' && url.trim().length > 0)
-      : [];
+    // Step 2: also collect from the already-loaded order state (normalized) as fallback
+    const fromState = collectFromObj(order);
 
-    const urls = type === 'preparation' ? preparationProofImages : deliveryProofImages;
+    const prepImages = Array.from(new Set([...rawPrep, ...fromState.prep]));
+    const delImages = Array.from(new Set([...rawDel, ...fromState.delivery]));
+
+    const urls = type === 'preparation' ? prepImages : delImages;
     if (!urls.length) {
       toast.info(type === 'preparation' ? 'Chưa có ảnh chuẩn bị' : 'Chưa có ảnh giao hàng');
       return;
