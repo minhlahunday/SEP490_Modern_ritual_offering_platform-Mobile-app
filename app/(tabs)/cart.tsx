@@ -24,6 +24,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 const { width } = Dimensions.get('window');
 const MAX_CART_ITEM_QUANTITY = 50;
 
+const formatMoney = (value: number | undefined | null) => {
+  if (value === undefined || value === null) return '0đ';
+  return value.toLocaleString('vi-VN') + 'đ';
+};
+
 export default function CartScreen() {
   const router = useRouter();
   const isFocused = useIsFocused();
@@ -248,7 +253,7 @@ export default function CartScreen() {
           <View style={styles.itemInfo}>
             <Text style={styles.itemName} numberOfLines={2}>{item.packageName}</Text>
             <Text style={styles.itemVariant}>{item.variantName}</Text>
-            <Text style={styles.itemPrice}>{item.price.toLocaleString()}đ</Text>
+            <Text style={styles.itemPrice}>{formatMoney(item.price)}</Text>
 
             {(item.swaps.length > 0 || item.addOns.length > 0) && (
               <View style={styles.optionList}>
@@ -258,7 +263,7 @@ export default function CartScreen() {
                     <Text style={styles.optionText} numberOfLines={1}>
                       {swap.replacementDescription || swap.replacementItemName || 'Thay thế'}
                     </Text>
-                    <Text style={styles.optionPriceText}>+{(Math.max(0, swap.surcharge) * item.quantity).toLocaleString()}đ</Text>
+                    <Text style={styles.optionPriceText}>+{formatMoney(Math.max(0, swap.surcharge) * item.quantity)}</Text>
                   </View>
                 ))}
 
@@ -267,13 +272,13 @@ export default function CartScreen() {
                     <Text style={styles.optionDot}>○</Text>
                     <Text style={styles.optionText} numberOfLines={1}>{addOn.itemName}</Text>
                     <Text style={styles.optionQtyText}>x{addOn.quantity}</Text>
-                    <Text style={styles.optionPriceText}>+{addOn.lineTotal.toLocaleString()}đ</Text>
+                    <Text style={styles.optionPriceText}>+{formatMoney(addOn.lineTotal)}</Text>
                   </View>
                 ))}
 
                 <View style={styles.itemSubTotalRow}>
                   <Text style={styles.itemSubTotalLabel}>Tạm tính mục này:</Text>
-                  <Text style={styles.itemSubTotalValue}>{item.lineTotal.toLocaleString()}đ</Text>
+                  <Text style={styles.itemSubTotalValue}>{formatMoney(item.lineTotal)}</Text>
                 </View>
               </View>
             )}
@@ -333,7 +338,11 @@ export default function CartScreen() {
   // Use selected summary if items are selected, otherwise use full summary
   const activeSummary = selectedItems.size > 0 ? selectedCheckoutSummary : checkoutSummary;
   
-  const subtotal = selectedItems.size === 0 ? 0 : (activeSummary?.subTotal || 0);
+  // Local fallback calculation if summary API hasn't loaded or failed
+  const localSelectedItems = cartItems.filter(item => selectedItems.has(item.cartItemId));
+  const localSubtotal = localSelectedItems.reduce((sum, item) => sum + (item.lineTotal || 0), 0);
+
+  const subtotal = selectedItems.size === 0 ? 0 : (activeSummary?.subTotal ?? localSubtotal);
   const shippingFromVendors = selectedItems.size === 0 ? 0 : (
     Array.isArray(activeSummary?.vendorOrders)
       ? activeSummary!.vendorOrders!.reduce((sum, vendor) => sum + Number(vendor?.shippingFee || 0), 0)
@@ -412,7 +421,7 @@ export default function CartScreen() {
               {loadingSelectedSummary && selectedItems.size > 0 ? (
                 <ActivityIndicator size="small" color="#0f172a" />
               ) : (
-                <Text style={styles.summaryValue}>{subtotal.toLocaleString()}đ</Text>
+                <Text style={styles.summaryValue}>{formatMoney(subtotal)}</Text>
               )}
             </View>
             <View style={styles.summaryRow}>
@@ -420,13 +429,13 @@ export default function CartScreen() {
               {loadingSelectedSummary && selectedItems.size > 0 ? (
                 <ActivityIndicator size="small" color="#0f172a" />
               ) : (
-                <Text style={styles.summaryValue}>{shipping.toLocaleString()}đ</Text>
+                <Text style={styles.summaryValue}>{formatMoney(shipping)}</Text>
               )}
             </View>
             {discount > 0 && (
               <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>Giảm giá:</Text>
-                <Text style={[styles.summaryValue, { color: '#059669' }]}>-{discount.toLocaleString()}đ</Text>
+                <Text style={[styles.summaryValue, { color: '#059669' }]}>-{formatMoney(discount)}</Text>
               </View>
             )}
             
@@ -436,7 +445,7 @@ export default function CartScreen() {
                 {loadingSelectedSummary && selectedItems.size > 0 ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Text style={styles.totalValueLarge}>{total.toLocaleString()}đ</Text>
+                  <Text style={styles.totalValueLarge}>{formatMoney(total)}</Text>
                 )}
               </View>
               <TouchableOpacity 
