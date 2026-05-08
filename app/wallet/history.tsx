@@ -33,6 +33,8 @@ const formatCurrency = (value: number): string => {
   return `${value.toLocaleString('vi-VN')}đ`;
 };
 
+const formatAbsCurrency = (value: number): string => formatCurrency(Math.abs(value || 0));
+
 const formatDateTimeVi = (value: string): string => {
   if (!value) return 'Chưa xác định';
   const date = new Date(value);
@@ -138,11 +140,11 @@ export default function TransactionHistoryScreen() {
 
   const totalIn = transactions
     .filter(isIncomingTransaction)
-    .reduce((sum, tx) => sum + (tx.amount || 0), 0);
+    .reduce((sum, tx) => sum + Math.abs(tx.amount || 0), 0);
 
   const totalOut = transactions
     .filter(tx => !isIncomingTransaction(tx))
-    .reduce((sum, tx) => sum + (tx.amount || 0), 0);
+    .reduce((sum, tx) => sum + Math.abs(tx.amount || 0), 0);
 
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right', 'bottom']}>
@@ -169,14 +171,14 @@ export default function TransactionHistoryScreen() {
           <ArrowDownLeft size={20} color="#059669" />
           <View>
             <Text style={styles.summaryLabel as TextStyle}>Tiền vào</Text>
-            <Text style={[styles.summaryValue as TextStyle, { color: '#059669' }]}>{formatCurrency(totalIn)}</Text>
+            <Text style={[styles.summaryValue as TextStyle, { color: '#059669' }]}>+{formatAbsCurrency(totalIn)}</Text>
           </View>
         </View>
         <View style={[styles.summaryCard, styles.summaryCardRight, { backgroundColor: '#fff1f2' }]}> 
           <ArrowUpRight size={20} color="#e11d48" />
           <View>
             <Text style={styles.summaryLabel as TextStyle}>Tiền ra</Text>
-            <Text style={[styles.summaryValue as TextStyle, { color: '#e11d48' }]}>{formatCurrency(totalOut)}</Text>
+            <Text style={[styles.summaryValue as TextStyle, { color: '#e11d48' }]}>-{formatAbsCurrency(totalOut)}</Text>
           </View>
         </View>
       </View>
@@ -256,7 +258,7 @@ export default function TransactionHistoryScreen() {
                   </View>
                   <View style={styles.txAmountContainer}>
                     <Text style={[styles.txAmount as TextStyle, { color: incoming ? '#10b981' : '#ef4444' }]}>
-                      {incoming ? '+' : '-'}{formatCurrency(tx.amount)}
+                      {incoming ? '+' : '-'}{formatAbsCurrency(tx.amount)}
                     </Text>
                     <View style={[styles.statusBadge, { backgroundColor: getStatusColor(tx.status) + '20' }]}>
                       <Text style={[styles.statusText as TextStyle, { color: getStatusColor(tx.status) }]}>
@@ -287,7 +289,7 @@ export default function TransactionHistoryScreen() {
                 <View style={styles.detailAmountSection}>
                   <Text style={styles.detailAmountLabel as TextStyle}>Số tiền</Text>
                   <Text style={[styles.detailAmount as TextStyle, { color: isIncomingTransaction(detailTx) ? '#10b981' : '#ef4444' }]}>
-                    {isIncomingTransaction(detailTx) ? '+' : '-'}{formatCurrency(detailTx.amount)}
+                    {isIncomingTransaction(detailTx) ? '+' : '-'}{formatAbsCurrency(detailTx.amount)}
                   </Text>
                   <View style={[styles.detailStatusBadge, { backgroundColor: getStatusColor(detailTx.status) + '20' }]}>
                     <Text style={[styles.detailStatusText as TextStyle, { color: getStatusColor(detailTx.status) }]}>

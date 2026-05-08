@@ -63,6 +63,7 @@ export interface Order {
     deliveryAddress: string;
     deliveryDate: string;
     deliveryTime: string;
+    deliveredDeadline?: string;
     customerName: string;
     customerPhone: string;
     preparationProofImages?: string[];
@@ -376,6 +377,7 @@ class OrderService {
         deliveryAddress: String(raw?.delivery?.deliveryAddress || raw?.deliveryAddress || ''),
         deliveryDate: String(raw?.delivery?.deliveryDate || raw?.deliveryDate || ''),
         deliveryTime: String(raw?.delivery?.deliveryTime || raw?.deliveryTime || ''),
+        deliveredDeadline: String(raw?.deliveredDeadline || raw?.delivery?.deliveredDeadline || ''),
         customerName: String(raw?.delivery?.customerName || raw?.customer?.fullName || ''),
         customerPhone: String(raw?.delivery?.customerPhone || raw?.customer?.phoneNumber || ''),
         preparationProofImages: []

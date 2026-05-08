@@ -21,6 +21,7 @@ import {
   Calendar
 } from 'lucide-react-native';
 import { orderService, Order } from '../../services/orderService';
+import { refundService, RefundRecord } from '../../services/refundService';
 import toast from '../../services/toast';
 import CancelOrderModal from '../../components/CancelOrderModal';
 import RefundModal from '../../components/RefundModal';
@@ -44,16 +45,31 @@ export default function MyOrdersScreen() {
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [cancelTargetOrderId, setCancelTargetOrderId] = useState<string | null>(null);
   const [refundTargetOrder, setRefundTargetOrder] = useState<Order | null>(null);
+  const [refundMap, setRefundMap] = useState<Record<string, RefundRecord>>({});
 
   const fetchOrders = async () => {
     try {
-      const data = await orderService.getMyOrders();
+      const [data, refunds] = await Promise.all([
+        orderService.getMyOrders(),
+        refundService.getAllRefunds().catch(() => [] as RefundRecord[]),
+      ]);
       const sorted = (data || []).sort((a, b) => {
         const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return timeB - timeA;
       });
       setOrders(sorted);
+
+      // Build a map of orderId -> most recent non-cancelled refund record
+      const map: Record<string, RefundRecord> = {};
+      refunds.forEach((r) => {
+        if (r.status === 'Cancelled') return; // skip cancelled refunds
+        const existing = map[r.orderId];
+        if (!existing || new Date(r.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
+          map[r.orderId] = r;
+        }
+      });
+      setRefundMap(map);
     } catch (error) {
       console.error('Error fetching orders:', error);
       toast.error('Không thể tải danh sách đơn hàng');
@@ -171,7 +187,12 @@ export default function MyOrdersScreen() {
       case 'DELIVERED': return 'Đã giao hàng';
       case 'COMPLETED': return 'Đơn hàng đã hoàn thành';
       case 'CANCELLED': return 'Đã hủy';
+      case 'REFUNDREQUESTED': return 'Trả hàng / Hoàn tiền';
+      case 'REFUNDING': return 'Đang hoàn tiền';
       case 'REFUNDED': return 'Đã hoàn tiền';
+      case 'RETURNREQUESTED': return 'Trả hàng / Hoàn tiền';
+      case 'RETURNED': return 'Đã trả hàng';
+      case 'PARTIALREFUNDED': return 'Hoàn tiền một phần';
       case 'PAYMENTFAILED': return 'Thanh toán lỗi';
       default: return status;
     }
@@ -187,7 +208,12 @@ export default function MyOrdersScreen() {
       case 'COMPLETED': return '#16a34a';
       case 'DELIVERED': return '#111827';
       case 'CANCELLED': return '#ef4444';
-      case 'REFUNDED': return '#64748b';
+      case 'REFUNDREQUESTED': return '#d97706';
+      case 'REFUNDING': return '#d97706';
+      case 'REFUNDED': return '#6366f1';
+      case 'RETURNREQUESTED': return '#d97706';
+      case 'RETURNED': return '#6366f1';
+      case 'PARTIALREFUNDED': return '#a78bfa';
       case 'PAYMENTFAILED': return '#e11d48';
       case 'SHIPPING':
       case 'DELIVERING': return '#6366f1';
@@ -267,7 +293,7 @@ export default function MyOrdersScreen() {
     if (tabId === 'DELIVERING') return ['DELIVERING', 'SHIPPING'].includes(s);
     if (tabId === 'DELIVERED') return s === 'DELIVERED';
     if (tabId === 'COMPLETED') return s === 'COMPLETED';
-    if (tabId === 'REFUND') return orderHasRefundSignal(order);
+    if (tabId === 'REFUND') return orderHasRefundSignal(order) || !!(order && refundMap[order.orderId]);
     if (tabId === 'CANCELLED') return s === 'CANCELLED';
     return s === tabId;
   };
@@ -328,7 +354,41 @@ export default function MyOrdersScreen() {
           </View>
         ) : (
           filteredOrders.map((order) => {
-            const hasRefundBadge = orderHasRefundSignal(order);
+            const refundRecord = refundMap[order.orderId] || null;
+            const hasRefundBadge = orderHasRefundSignal(order) || !!refundRecord;
+
+
+            // Determine refund status for the banner
+            const refundStatus = (() => {
+              // Use refund record status if available
+              if (refundRecord) {
+                return refundRecord.status; // 'Pending' | 'Approved' | 'Rejected'
+              }
+              const s = String(order.orderStatus || '').toUpperCase().replace(/[\s_-]/g, '');
+              if (s === 'REFUNDED' || s === 'PARTIALREFUNDED') return 'Approved';
+              if (s === 'REFUNDREQUESTED' || s === 'RETURNREQUESTED' || s === 'REFUNDING') return 'Pending';
+              // Check items for refund signals
+              if (Array.isArray(order.items)) {
+                const anyRefunded = order.items.some((it: any) => it?.isRefunded === true || it?.isReturned === true);
+                if (anyRefunded) return 'Approved';
+                const anyRequested = order.items.some((it: any) => it?.isRequestRefund === true);
+                if (anyRequested) return 'Pending';
+              }
+              return 'Pending';
+            })();
+
+            const getRefundBannerColors = (status: string) => {
+              switch (status) {
+                case 'Approved':
+                  return { bg: '#ecfdf5', border: '#a7f3d0', iconBg: '#d1fae5', iconColor: '#059669', textColor: '#065f46', subColor: '#047857' };
+                case 'Rejected':
+                  return { bg: '#fff1f2', border: '#fecdd3', iconBg: '#ffe4e6', iconColor: '#e11d48', textColor: '#9f1239', subColor: '#be123c' };
+                default:
+                  return { bg: '#eff6ff', border: '#bfdbfe', iconBg: '#dbeafe', iconColor: '#2563eb', textColor: '#1e40af', subColor: '#1d4ed8' };
+              }
+            };
+
+            const refundColors = getRefundBannerColors(refundStatus);
 
             return (
             <View key={order.orderId} style={styles.orderCard}>
@@ -352,6 +412,31 @@ export default function MyOrdersScreen() {
                   </Text>
                 </View>
               </View>
+
+              {/* Refund Notice Banner */}
+              {hasRefundBadge && (
+                <View style={[
+                  styles.refundBannerCard,
+                  { backgroundColor: refundColors.bg, borderColor: refundColors.border }
+                ]}>
+                  <View style={[styles.refundBannerIconWrap, { backgroundColor: refundColors.iconBg }]}>
+                    <AlertCircle size={18} color={refundColors.iconColor} />
+                  </View>
+                  <View style={styles.refundBannerContent}>
+                    <Text style={[styles.refundBannerTitle, { color: refundColors.textColor }]}>
+                      {refundStatus === 'Approved'
+                        ? 'Yêu cầu hoàn tiền: Đã chấp nhận'
+                        : refundStatus === 'Rejected'
+                          ? 'Yêu cầu hoàn tiền: Đã từ chối'
+                          : 'Yêu cầu hoàn tiền: Đang xử lý'}
+                    </Text>
+                    <Text style={[styles.refundBannerSub, { color: refundColors.subColor }]}>
+                      Mã đơn: #{order.orderId.substring(0, 8).toUpperCase()}
+                    </Text>
+                  </View>
+                  <ChevronRight size={16} color={refundColors.iconColor} />
+                </View>
+              )}
 
               <TouchableOpacity 
                 style={styles.orderBody} 
@@ -529,6 +614,37 @@ const styles = StyleSheet.create({
     color: '#ea580c',
     fontSize: 10,
     fontWeight: '800',
+  },
+  refundBannerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    gap: 10,
+  },
+  refundBannerIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  refundBannerContent: {
+    flex: 1,
+  },
+  refundBannerTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  refundBannerSub: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 2,
+    opacity: 0.8,
   },
   itemPrice: { fontSize: 14, fontWeight: '800', color: '#000' },
   moreItemsText: { fontSize: 12, color: '#94a3b8', fontStyle: 'italic', marginBottom: 8 },

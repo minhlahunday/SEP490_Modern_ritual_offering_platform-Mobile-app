@@ -28,6 +28,7 @@ import {
 } from 'lucide-react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { checkoutService, CheckoutSummary, CheckoutRequest } from '../../services/checkoutService';
+import { cartService, CartItemApi } from '../../services/cartService';
 import { addressService, CustomerAddress } from '../../services/addressService';
 import { shippingService, ShippingConfig } from '../../services/shippingService';
 import { getProfile, getCurrentUser } from '../../services/auth';
@@ -56,6 +57,7 @@ export default function CheckoutScreen() {
   const [decorationNotes, setDecorationNotes] = useState<Record<number, string>>({});
   const [fullName, setFullName] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
+  const [fallbackItems, setFallbackItems] = useState<CartItemApi[]>([]);
 
   const openPayosInApp = (url: string) => {
     const encoded = encodeURIComponent(url);
@@ -246,15 +248,24 @@ export default function CheckoutScreen() {
         return;
       }
       
-      const [addressList, summaryData, profile] = await Promise.all([
+      const [addressList, summaryData, cartData, profile] = await Promise.all([
         addressService.getAddresses(),
         checkoutService.getSummary(ids),
+        cartService.getCart().catch(() => null),
         getProfile().catch(() => null)
       ]);
 
       setAddresses(addressList);
       if (summaryData) {
         setSummary(summaryData);
+
+        const summaryItems = resolveSummaryItems(summaryData);
+        if (!summaryItems.length && cartData?.cartItems?.length) {
+          const selectedSet = new Set(ids);
+          setFallbackItems(cartData.cartItems.filter((item) => selectedSet.has(item.cartItemId)));
+        } else {
+          setFallbackItems([]);
+        }
 
         // Fetch shipping configs for all vendors
         const vendors = Array.isArray(summaryData.vendorOrders)
@@ -322,6 +333,7 @@ export default function CheckoutScreen() {
   }, [payosCanceled, cartItemId]);
 
   const summaryItems = resolveSummaryItems(summary);
+  const displayItems = summaryItems.length > 0 ? summaryItems : fallbackItems;
   const summarySubTotal = Number(summary?.subTotal || summaryItems.reduce((sum: number, item: any) => sum + (Number(item?.lineTotal) || (Number(item?.price) * Number(item?.quantity || 0))), 0));
   const summaryShippingFromVendors = Array.isArray(summary?.vendorOrders)
     ? summary!.vendorOrders!.reduce((sum: number, vendor: any) => sum + Number(vendor?.shippingFee || 0), 0)
@@ -332,8 +344,46 @@ export default function CheckoutScreen() {
   const summaryTotalItems = Number(
     summary?.totalItems
     || summaryItems.reduce((sum: number, item: any) => sum + Number(item?.quantity || 0), 0)
+    || displayItems.reduce((sum: number, item: any) => sum + Number(item?.quantity || 0), 0)
     || parseCartItemIds().length
   );
+
+  const formatMoney = (value: any) => `${Number(value || 0).toLocaleString('vi-VN')}đ`;
+
+  const getItemOptions = (item: any): Array<{ id: string; label: string; price?: number }> => {
+    const options: Array<{ id: string; label: string; price?: number }> = [];
+
+    if (Array.isArray(item?.swaps)) {
+      item.swaps.forEach((swap: any, index: number) => {
+        const label = String(
+          swap?.replacementDescription
+          || swap?.replacementItemName
+          || swap?.originalItemName
+          || 'Thay thế'
+        ).trim();
+        const surcharge = Number(swap?.surcharge || 0);
+        options.push({
+          id: `${item.cartItemId}-swap-${swap?.cartItemSwapId || swap?.swapId || index}`,
+          label: label ? `Đổi từ ${label}` : 'Đổi món',
+          price: surcharge,
+        });
+      });
+    }
+
+    if (Array.isArray(item?.addOns)) {
+      item.addOns.forEach((addOn: any, index: number) => {
+        const label = String(addOn?.itemName || addOn?.addOnName || addOn?.name || 'Phụ kiện').trim();
+        const lineTotal = Number(addOn?.lineTotal || 0);
+        options.push({
+          id: `${item.cartItemId}-addon-${addOn?.cartItemAddOnId || addOn?.addOnId || index}`,
+          label,
+          price: lineTotal,
+        });
+      });
+    }
+
+    return options;
+  };
 
   const vendorList = Array.isArray(summary?.vendorOrders) ? summary.vendorOrders : (Array.isArray((summary as any)?.vendors) ? (summary as any).vendors : []);
   const hasExceededDistance = vendorList.some((order: any) => order.shippingDistanceKm && order.shippingDistanceKm > 60);
@@ -408,7 +458,7 @@ export default function CheckoutScreen() {
     }
 
     const fallbackIds = parseCartItemIds();
-    if (!summaryItems.length && fallbackIds.length === 0) {
+    if (!displayItems.length && fallbackIds.length === 0) {
       toast.error('Đơn hàng không có sản phẩm hợp lệ');
       router.back();
       return;
@@ -418,8 +468,8 @@ export default function CheckoutScreen() {
       deliveryDate: formatDateLocalYmd(selectedDateTime),
       deliveryTime: formatTimeLocalHms(selectedDateTime),
       paymentMethod,
-      items: summaryItems.length > 0
-        ? summaryItems.map((item: any) => ({
+      items: displayItems.length > 0
+        ? displayItems.map((item: any) => ({
             cartItemId: item.cartItemId,
             decorationNote: decorationNotes[item.cartItemId] || ''
           }))
@@ -581,30 +631,69 @@ export default function CheckoutScreen() {
             <Text style={styles.sectionTitle}>Sản phẩm & Ghi chú</Text>
           </View>
           
-          {summaryItems.map((item: any) => (
-            <View key={item.cartItemId} style={styles.checkoutItemCard}>
-              <View style={styles.itemMain}>
-                <Image source={item.imageUrl ? { uri: item.imageUrl } : require('../../assets/images/logo.png')} style={styles.itemImg} />
-                <View style={styles.itemInfo}>
-                  <Text style={styles.itemName} numberOfLines={1}>{item.packageName}</Text>
-                  <Text style={styles.itemMeta}>SL: {item.quantity} • {item.variantName}</Text>
-                  <Text style={styles.itemPrice}>{Number(item.price || 0).toLocaleString('vi-VN')}đ</Text>
+          <View style={styles.itemsSummaryCard}>
+              {displayItems.map((item: any) => {
+              const options = getItemOptions(item);
+              const noteValue = decorationNotes[item.cartItemId] || '';
+              const itemLineTotal = Number(item?.lineTotal ?? item?.variantSubTotal ?? ((item?.price || 0) * (item?.quantity || 0)));
+
+              return (
+                <View key={item.cartItemId} style={styles.checkoutItemCard}>
+                  <View style={styles.itemMain}>
+                    <Image source={item.imageUrl ? { uri: item.imageUrl } : require('../../assets/images/logo.png')} style={styles.itemImg} />
+                    <View style={styles.itemInfo}>
+                      <Text style={styles.itemName} numberOfLines={2}>{item.packageName}</Text>
+                      <Text style={styles.itemMeta}>{item.variantName} • SL: {item.quantity}</Text>
+                      <View style={styles.itemPriceRow}>
+                        <Text style={styles.itemUnitPrice}>{formatMoney(item.price)}</Text>
+                        <Text style={styles.itemLineTotal}>{formatMoney(itemLineTotal)}</Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  {options.length > 0 && (
+                    <View style={styles.optionList}>
+                      {options.map((option) => (
+                        <View key={option.id} style={styles.optionRow}>
+                          <Text style={styles.optionText} numberOfLines={2}>{option.label}</Text>
+                          <Text style={styles.optionPrice}>
+                            {option.price && option.price > 0 ? `+${formatMoney(option.price)}` : '+0đ'}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+
+                  <View style={styles.noteBlock}>
+                    <View style={styles.noteBlockHeader}>
+                      <Edit3 size={14} color="#2563eb" />
+                      <Text style={styles.noteBlockTitle}>Ghi chú cho sản phẩm</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.noteQuickBtn}
+                      onPress={() => setDecorationNotes(prev => ({ ...prev, [item.cartItemId]: prev[item.cartItemId] || '' }))}
+                    >
+                      <Text style={styles.noteQuickBtnText}>Thêm ghi chú</Text>
+                      <ChevronRight size={14} color="#2563eb" />
+                    </TouchableOpacity>
+                    <TextInput
+                      style={styles.noteInput}
+                      placeholder="VD: Thêm hoa tươi, nến, trái cây..."
+                      placeholderTextColor="#94a3b8"
+                      value={noteValue}
+                      onChangeText={(txt) => setDecorationNotes(prev => ({ ...prev, [item.cartItemId]: txt }))}
+                      multiline
+                      textAlignVertical="top"
+                    />
+                    <View style={styles.noteHintBox}>
+                      <Text style={styles.noteHintLabel}>Lưu ý:</Text>
+                      <Text style={styles.noteHintText}>Ghi chú của bạn sẽ được chuyển tới người bán để chuẩn bị theo yêu cầu của bạn.</Text>
+                    </View>
+                  </View>
                 </View>
-              </View>
-              
-              <View style={styles.noteContainer}>
-                <Edit3 size={14} color="#9ca3af" style={styles.noteIcon} />
-                <TextInput
-                  style={styles.noteInput}
-                  placeholder="Ghi chú trang trí/yêu cầu thêm..."
-                  placeholderTextColor="#9ca3af"
-                  value={decorationNotes[item.cartItemId] || ''}
-                  onChangeText={(txt) => setDecorationNotes(prev => ({ ...prev, [item.cartItemId]: txt }))}
-                  multiline={false}
-                />
-              </View>
-            </View>
-          ))}
+              );
+            })}
+          </View>
         </View>
 
         {/* PAYMENT METHOD */}
@@ -880,21 +969,25 @@ const styles = StyleSheet.create({
   itemMain: { flexDirection: 'row', gap: 12, marginBottom: 12 },
   itemImg: { width: 64, height: 64, borderRadius: 12, backgroundColor: '#f1f5f9' },
   itemInfo: { flex: 1, justifyContent: 'center' },
-  itemName: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
+  itemName: { fontSize: 14, fontWeight: '800', color: '#0f172a', lineHeight: 20 },
   itemMeta: { fontSize: 12, color: '#64748b', marginTop: 2 },
-  itemPrice: { fontSize: 14, fontWeight: '800', color: '#000', marginTop: 4 },
-  noteContainer: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: '#f8fafc', 
-    paddingHorizontal: 12, 
-    paddingVertical: 10, 
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#f1f5f9'
-  },
-  noteIcon: { marginRight: 8 },
-  noteInput: { flex: 1, fontSize: 13, color: '#1e293b', padding: 0 },
+  itemPriceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, gap: 12 },
+  itemUnitPrice: { fontSize: 12, color: '#334155', fontWeight: '600' },
+  itemLineTotal: { fontSize: 14, fontWeight: '900', color: '#000' },
+  itemsSummaryCard: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 24, overflow: 'hidden' },
+  optionList: { gap: 8, marginBottom: 12 },
+  optionRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#fff7ed', borderRadius: 12, borderWidth: 1, borderColor: '#fed7aa' },
+  optionText: { flex: 1, fontSize: 12, color: '#c2410c', fontWeight: '700', lineHeight: 18 },
+  optionPrice: { fontSize: 12, color: '#ea580c', fontWeight: '800', flexShrink: 0 },
+  noteBlock: { backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#dbeafe', borderRadius: 18, padding: 14 },
+  noteBlockHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  noteBlockTitle: { fontSize: 13, fontWeight: '800', color: '#1d4ed8' },
+  noteQuickBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: '#bfdbfe', backgroundColor: '#eff6ff', marginBottom: 10 },
+  noteQuickBtnText: { fontSize: 13, fontWeight: '800', color: '#2563eb' },
+  noteInput: { minHeight: 92, fontSize: 13, color: '#0f172a', paddingHorizontal: 12, paddingVertical: 12, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 14, lineHeight: 18 },
+  noteHintBox: { marginTop: 10, backgroundColor: '#eff6ff', borderWidth: 1, borderColor: '#bfdbfe', borderRadius: 14, padding: 12 },
+  noteHintLabel: { fontSize: 12, color: '#1d4ed8', fontWeight: '800', marginBottom: 4 },
+  noteHintText: { fontSize: 12, color: '#1d4ed8', lineHeight: 18 },
 
   paymentOption: { 
     flexDirection: 'row', 

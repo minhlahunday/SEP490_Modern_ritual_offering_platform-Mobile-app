@@ -15,7 +15,7 @@ import {
 import { X, AlertCircle, Plus, Square, CheckSquare, Circle, CheckCircle2 } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { refundService } from '../services/refundService';
-import { Order } from '../services/orderService';
+import { Order, orderService } from '../services/orderService';
 import toast from '../services/toast';
 
 interface RefundModalProps {
@@ -192,6 +192,13 @@ export default function RefundModal({ isOpen, onClose, onSuccess, order }: Refun
       });
 
       if (result.success) {
+        // Update order status to RefundRequested after successful refund creation
+        try {
+          await orderService.updateOrderStatus(order.orderId, 'RefundRequested');
+        } catch (error) {
+          console.error('Error updating order status:', error);
+          // Continue even if status update fails, the refund was still created
+        }
         toast.success('Gửi yêu cầu hoàn tiền thành công');
         onSuccess();
         onClose();

@@ -247,6 +247,35 @@ export default function OrderDetailsScreen() {
     }
   };
 
+  const handleCancelRefund = async () => {
+    if (!refundInfo) return;
+
+    const result = await toast.confirm({
+      title: 'Hủy yêu cầu hoàn tiền',
+      text: 'Bạn có chắc muốn hủy yêu cầu hoàn tiền này?',
+      confirmButtonText: 'Hủy yêu cầu',
+      cancelButtonText: 'Giữ lại',
+      icon: 'warning',
+    });
+
+    if (!result.isConfirmed) return;
+
+    setEscalating(true);
+    try {
+      const ok = await refundService.escalateRefund(refundInfo.refundId, false);
+      if (ok) {
+        toast.success('Đã hủy yêu cầu hoàn tiền.');
+        setRefundInfo(null);
+      } else {
+        toast.error('Không thể hủy yêu cầu. Vui lòng thử lại.');
+      }
+    } catch (error: any) {
+      toast.error(error.message || 'Không thể hủy yêu cầu.');
+    } finally {
+      setEscalating(false);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.centerContainer}>
@@ -256,6 +285,20 @@ export default function OrderDetailsScreen() {
   }
 
   if (!order) return null;
+
+  const hasRefundStep = Boolean(refundInfo?.refundId);
+  const hasRefundSignal = Boolean(refundInfo)
+    || isRefundRelatedStatus(order.orderStatus)
+    || isRefundRelatedStatus((order as any).refundStatus)
+    || isRefundRelatedStatus((order as any).refund?.status)
+    || isRefundRelatedStatus((order as any).refundInfo?.status)
+    || toNumber((order as any).refundAmount) > 0
+    || toNumber((order as any).refundedAmount) > 0
+    || (Array.isArray(order?.items) && order.items.some((item: any) => isOrderItemRefunded(item) || item?.isRequestRefund === true));
+  const displayOrderStatus = hasRefundStep && String(order.orderStatus || '').toUpperCase().includes('REFUND')
+    ? 'DELIVERED'
+    : order.orderStatus;
+  const refundBannerStatus = refundInfo?.status || (hasRefundSignal ? 'Pending' : 'Pending');
 
   const getStatusText = (status: string) => {
     switch (status.toUpperCase()) {
@@ -267,6 +310,12 @@ export default function OrderDetailsScreen() {
       case 'DELIVERED': return 'Đã giao hàng';
       case 'COMPLETED': return 'Đã hoàn thành';
       case 'CANCELLED': return 'Đã hủy';
+      case 'REFUNDREQUESTED': return 'Trả hàng / Hoàn tiền';
+      case 'REFUNDING': return 'Đang hoàn tiền';
+      case 'REFUNDED': return 'Đã hoàn tiền';
+      case 'RETURNREQUESTED': return 'Trả hàng / Hoàn tiền';
+      case 'RETURNED': return 'Đã trả hàng';
+      case 'PARTIALREFUNDED': return 'Hoàn tiền một phần';
       default: return status;
     }
   };
@@ -281,6 +330,12 @@ export default function OrderDetailsScreen() {
       case 'DELIVERED': return '#22c55e';
       case 'COMPLETED': return '#16a34a';
       case 'CANCELLED': return '#ef4444';
+      case 'REFUNDREQUESTED': return '#d97706'; // amber for return/refund request
+      case 'REFUNDING': return '#d97706'; // amber for refunding
+      case 'REFUNDED': return '#6366f1'; // indigo for refunded
+      case 'RETURNREQUESTED': return '#d97706'; // amber for return request
+      case 'RETURNED': return '#6366f1'; // indigo for returned
+      case 'PARTIALREFUNDED': return '#a78bfa'; // light purple for partial refund
       default: return '#6b7280';
     }
   };
@@ -294,18 +349,19 @@ export default function OrderDetailsScreen() {
     return 0;
   };
 
-  const trackingStepIndex = getTrackingStepIndex(order.orderStatus);
+  const trackingStepIndex = getTrackingStepIndex(displayOrderStatus);
   const trackingSteps = [
     { label: 'Xác nhận', icon: CheckCircle2 },
     { label: 'Chuẩn bị', icon: Package },
     { label: 'Đang giao', icon: Truck },
     { label: 'Hoàn tất', icon: HouseIcon },
+    ...(hasRefundStep ? [{ label: 'Hoàn tiền', icon: Info }] : []),
   ];
 
   // Map HouseIcon to Home or similar if needed, or use existing Lucide icons
   // Actually I see I didn't import Home, let's just use Package/CheckCircle etc.
 
-  const toNumber = (...values: any[]) => {
+  function toNumber(...values: any[]) {
     for (const value of values) {
       if (typeof value === 'number' && Number.isFinite(value)) return value;
       if (typeof value === 'string' && value.trim() !== '') {
@@ -343,7 +399,7 @@ export default function OrderDetailsScreen() {
     );
   };
 
-  const isRefundRelatedStatus = (rawStatus: any) => {
+  function isRefundRelatedStatus(rawStatus: any) {
     const s = String(rawStatus || '').toUpperCase().replace(/[\s_-]/g, '');
     return [
       'REFUNDED',
@@ -354,9 +410,9 @@ export default function OrderDetailsScreen() {
       'RETURNREQUESTED',
       'PARTIALREFUNDED',
     ].includes(s) || s.includes('REFUND') || s.includes('RETURN');
-  };
+  }
 
-  const isOrderItemRefunded = (item: any) => {
+  function isOrderItemRefunded(item: any) {
     if (!item) return false;
     if (isRefundRelatedStatus(item?.status)) return true;
     if (isRefundRelatedStatus(item?.refundStatus)) return true;
@@ -407,6 +463,13 @@ export default function OrderDetailsScreen() {
   const getAddOnDisplayText = (addOn: any) => {
     const name = String(addOn?.itemName || addOn?.name || '').trim();
     return name || 'Món thêm';
+  };
+
+  const formatDateTimeDisplay = (value: string) => {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return `${date.toLocaleDateString('vi-VN')} ${date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`;
   };
 
   const getSwapDisplayAmount = (item: any, swap: any) => {
@@ -602,14 +665,80 @@ export default function OrderDetailsScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+
+        {/* REFUND BANNER */}
+        {hasRefundSignal && (
+          <View
+            style={[
+              styles.refundBanner,
+              refundBannerStatus === 'Approved'
+                ? styles.refundBannerApproved
+                : refundBannerStatus === 'Rejected'
+                  ? styles.refundBannerRejected
+                  : styles.refundBannerPending,
+            ]}
+          >
+            <View style={styles.refundBannerLeft}>
+              <View
+                style={[
+                  styles.refundBannerIcon,
+                  refundBannerStatus === 'Approved'
+                    ? styles.refundBannerIconApproved
+                    : refundBannerStatus === 'Rejected'
+                      ? styles.refundBannerIconRejected
+                      : styles.refundBannerIconPending,
+                ]}
+              >
+                <Info
+                  size={18}
+                  color={refundBannerStatus === 'Rejected' ? '#e11d48' : refundBannerStatus === 'Approved' ? '#059669' : '#2563eb'}
+                />
+              </View>
+              <View style={styles.refundBannerTextWrap}>
+                <Text
+                  style={[
+                    styles.refundBannerTitle,
+                    refundBannerStatus === 'Approved'
+                      ? styles.refundBannerTitleApproved
+                      : refundBannerStatus === 'Rejected'
+                        ? styles.refundBannerTitleRejected
+                        : styles.refundBannerTitlePending,
+                  ]}
+                >
+                  Yêu cầu hoàn tiền: {refundBannerStatus === 'Approved' ? 'Đã chấp nhận' : refundBannerStatus === 'Rejected' ? 'Đã từ chối' : 'Đang xử lý'}
+                </Text>
+                <Text
+                  style={[
+                    styles.refundBannerSub,
+                    refundBannerStatus === 'Approved'
+                      ? styles.refundBannerSubApproved
+                      : refundBannerStatus === 'Rejected'
+                        ? styles.refundBannerSubRejected
+                        : styles.refundBannerSubPending,
+                  ]}
+                >
+                  Mã hoàn tiền: {String(refundInfo?.refundId || order.orderId || '').substring(0, 8).toUpperCase()}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.refundBannerActions}>
+              {refundBannerStatus === 'Rejected' && refundInfo && (
+                <TouchableOpacity style={styles.refundBannerActionGhost} onPress={handleEscalateRefund} disabled={escalating}>
+                  <Text style={styles.refundBannerActionGhostText}>{escalating ? 'Đang gửi...' : 'Khiếu nại'}</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
         
         {/* STATUS BANNER */}
-        <View style={[styles.statusBanner, { backgroundColor: getStatusColor(order.orderStatus) }]}> 
+        <View style={[styles.statusBanner, { backgroundColor: getStatusColor(displayOrderStatus) }]}> 
           <View style={{ flex: 1 }}>
             <Text style={styles.statusLabel}>Trạng thái đơn hàng</Text>
-            <Text style={styles.statusValue}>{getStatusText(order.orderStatus)}</Text>
+            <Text style={styles.statusValue}>{getStatusText(displayOrderStatus)}</Text>
 
-            {order.orderStatus.toUpperCase() === 'DELIVERED' && (
+            {displayOrderStatus.toUpperCase() === 'DELIVERED' && !refundInfo && (
               <View style={styles.statusActionsRow}>
                 <TouchableOpacity
                   style={styles.statusGhostBtn}
@@ -837,6 +966,13 @@ export default function OrderDetailsScreen() {
               </Text>
               <Text style={styles.infoSubValue}>{order.delivery.deliveryTime}</Text>
             </View>
+            {order.delivery.deliveredDeadline ? (
+              <View style={styles.infoItem}>
+                <Text style={styles.infoLabel}>Giao hàng dự kiến</Text>
+                <Text style={styles.infoValue}>{formatDateTimeDisplay(order.delivery.deliveredDeadline)}</Text>
+                <Text style={styles.infoSubValue}>Mốc hoàn tất giao hàng theo hệ thống</Text>
+              </View>
+            ) : null}
           </View>
           <View style={styles.addressBox}>
             <MapPin size={16} color="#6b7280" />
@@ -982,6 +1118,110 @@ const styles = StyleSheet.create({
   
   scrollContent: { paddingBottom: 40 },
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+
+  refundBanner: {
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 8,
+    padding: 16,
+    borderRadius: 24,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  refundBannerPending: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#bfdbfe',
+  },
+  refundBannerApproved: {
+    backgroundColor: '#ecfdf5',
+    borderColor: '#bbf7d0',
+  },
+  refundBannerRejected: {
+    backgroundColor: '#fff1f2',
+    borderColor: '#fecdd3',
+  },
+  refundBannerLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  refundBannerIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  refundBannerIconPending: {
+    backgroundColor: '#dbeafe',
+  },
+  refundBannerIconApproved: {
+    backgroundColor: '#d1fae5',
+  },
+  refundBannerIconRejected: {
+    backgroundColor: '#fee2e2',
+  },
+  refundBannerTextWrap: {
+    flex: 1,
+  },
+  refundBannerTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  refundBannerTitlePending: {
+    color: '#1d4ed8',
+  },
+  refundBannerTitleApproved: {
+    color: '#047857',
+  },
+  refundBannerTitleRejected: {
+    color: '#be123c',
+  },
+  refundBannerSub: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  refundBannerSubPending: {
+    color: '#2563eb',
+  },
+  refundBannerSubApproved: {
+    color: '#059669',
+  },
+  refundBannerSubRejected: {
+    color: '#e11d48',
+  },
+  refundBannerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  refundBannerActionBtn: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+  },
+  refundBannerActionBtnText: {
+    color: '#1d4ed8',
+    fontWeight: '800',
+    fontSize: 12,
+  },
+  refundBannerActionGhost: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+  },
+  refundBannerActionGhostText: {
+    color: '#e11d48',
+    fontWeight: '800',
+    fontSize: 12,
+  },
   
   statusBanner: { 
     flexDirection: 'row', 
