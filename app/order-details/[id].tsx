@@ -213,7 +213,7 @@ export default function OrderDetailsScreen() {
           onPress: async () => {
             setCompleting(true);
             try {
-              const success = await orderService.updateOrderStatus(id as string, 'Completed');
+              const success = await orderService.completeOrder(id as string);
               if (success) {
                 toast.success('Đơn hàng đã hoàn thành');
                 fetchOrder();

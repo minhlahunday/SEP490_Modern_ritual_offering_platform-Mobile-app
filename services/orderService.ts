@@ -726,6 +726,38 @@ class OrderService {
     }
   }
 
+  async completeOrder(orderId: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/orders/customer/${orderId}/completed`, {
+        method: 'PUT',
+        headers: this.getHeaders()
+      });
+
+      if (!response.ok) {
+        const raw = await response.text().catch(() => '');
+        let message = 'Cập nhật đơn hàng thất bại';
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed?.errorMessages) && parsed.errorMessages.length > 0) {
+              message = String(parsed.errorMessages[0]);
+            } else if (typeof parsed?.message === 'string' && parsed.message.trim()) {
+              message = parsed.message.trim();
+            }
+          } catch {
+            message = raw;
+          }
+        }
+        throw new Error(message);
+      }
+
+      return true;
+    } catch (error) {
+      console.error('Error completing order:', error);
+      throw error;
+    }
+  }
+
   async updateOrderStatus(orderId: string, status: string): Promise<boolean> {
     try {
       const statusCandidates = Array.from(new Set([
