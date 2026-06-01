@@ -216,7 +216,7 @@ class PackageService {
     },
   ): Promise<any> {
     const send = async (body: any) => {
-      const response = await fetchWithAuth(endpoint, {
+      const response = await fetch(endpoint, {
         method,
         headers: {
           'Content-Type': 'application/json',

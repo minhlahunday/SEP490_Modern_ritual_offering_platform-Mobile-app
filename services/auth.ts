@@ -1380,3 +1380,217 @@ export async function changePassword(data: ChangePasswordRequest): Promise<{ mes
   }
 }
 
+export interface RefreshTokenRequest {
+  refreshToken: string;
+}
+
+export interface RefreshTokenResponse {
+  token: string;
+  refreshToken: string;
+}
+
+export async function refreshTokenApi(data: RefreshTokenRequest): Promise<RefreshTokenResponse> {
+  try {
+    console.log('🔄 Calling refresh-token API...');
+
+    const response = await fetch(`${API_BASE_URL}/api/auth/refresh-token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
+
+    console.log('📡 Refresh-token API status:', response.status);
+
+    const responseText = await response.text();
+    console.log('📥 Refresh-token response:', responseText);
+
+    if (!response.ok) {
+      throw new Error(`Refresh token failed: ${response.status}`);
+    }
+
+    const responseData: ApiResponse<RefreshTokenResponse> = JSON.parse(responseText);
+
+    if (responseData.isSuccess && responseData.result) {
+      return responseData.result;
+    } else {
+      throw new Error(responseData.errorMessages?.join(', ') || 'Refresh token failed');
+    }
+  } catch (error) {
+    console.error('❌ Refresh Token API Error:', error);
+    throw error;
+  }
+}
+
+export async function refreshAuthToken(): Promise<string | null> {
+  try {
+    const refreshToken = _refreshToken;
+    if (!refreshToken) {
+      console.warn('⚠️ No refresh token found in storage');
+      return null;
+    }
+
+    const result = await refreshTokenApi({ refreshToken });
+
+    if (result.token && result.refreshToken) {
+      // Update tokens in memory cache and SecureStore
+      _token = result.token;
+      _refreshToken = result.refreshToken;
+
+      try {
+        await Promise.all([
+          SecureStore.setItemAsync(TOKEN_KEY, result.token),
+          SecureStore.setItemAsync(REFRESH_TOKEN_KEY, result.refreshToken),
+        ]);
+      } catch (error) {
+        console.error('❌ SecureStore update error during refresh:', error);
+      }
+
+      // Also update user object in SecureStore if needed
+      const currentUser = _currentUser;
+      if (currentUser) {
+        const decodedToken = decodeJWT(result.token);
+        const rawRole =
+          decodedToken.role ??
+          decodedToken['http://schemas.microsoft.com/ws/2008/06/identity/claims/role'] ??
+          decodedToken.roles;
+
+        const role = normalizeRoleClaim(rawRole);
+        const roles = extractNormalizedRoles(rawRole);
+        const normalizedRoles = roles.length > 0 ? Array.from(new Set(roles)) : [role];
+
+        const updatedUser: LoginResponse = {
+          ...currentUser,
+          token: result.token,
+          refreshToken: result.refreshToken,
+          role: role,
+          roles: normalizedRoles,
+          name: decodedToken.name || decodedToken.given_name || decodedToken.email || currentUser.email,
+        };
+        _currentUser = updatedUser;
+        try {
+          await SecureStore.setItemAsync(USER_KEY, JSON.stringify(updatedUser));
+        } catch (error) {
+          console.error('❌ SecureStore user save error during refresh:', error);
+        }
+      }
+
+      console.log('✅ Token refreshed successfully');
+      return result.token;
+    }
+
+    return null;
+  } catch (error) {
+    console.error('❌ Error in refreshAuthToken:', error);
+    return null;
+  }
+}
+
+/**
+ * Global fetch wrapper with automatic token refresh on 401
+ */
+export async function fetchWithAuth(url: string, options: RequestInit = {}): Promise<Response> {
+  const token = getAuthToken();
+  
+  const headers = {
+    ...options.headers,
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+  };
+
+  let response = await fetch(url, { ...options, headers });
+
+  if (response.status === 401) {
+    console.log('🔄 401 Unauthorized detected, attempting token refresh...');
+    const newToken = await refreshAuthToken();
+    
+    if (newToken) {
+      console.log('✅ Token refreshed, retrying original request...');
+      const retryHeaders = {
+        ...options.headers,
+        'Authorization': `Bearer ${newToken}`
+      };
+      response = await fetch(url, { ...options, headers: retryHeaders });
+    } else {
+      console.warn('❌ Token refresh failed, logging out...');
+      await logout();
+    }
+  }
+
+  return response;
+}
+
+// Monkey patch global fetch to automatically apply authentication & refresh token logic
+const originalFetch = global.fetch;
+
+global.fetch = async function (url: any, options: any = {}) {
+  const token = getAuthToken();
+  
+  let headers = options.headers || {};
+  let hasAuth = false;
+  if (headers instanceof Headers) {
+    hasAuth = headers.has('Authorization') || headers.has('authorization');
+  } else if (Array.isArray(headers)) {
+    hasAuth = headers.some(pair => pair[0] && pair[0].toLowerCase() === 'authorization');
+  } else if (typeof headers === 'object') {
+    hasAuth = Object.keys(headers).some(h => h.toLowerCase() === 'authorization');
+  }
+
+  if (token && !hasAuth) {
+    if (headers instanceof Headers) {
+      headers.set('Authorization', `Bearer ${token}`);
+    } else if (Array.isArray(headers)) {
+      headers.push(['Authorization', `Bearer ${token}`]);
+    } else if (typeof headers === 'object') {
+      headers = {
+        ...headers,
+        'Authorization': `Bearer ${token}`
+      };
+    }
+  }
+
+  const mergedOptions = {
+    ...options,
+    headers
+  };
+
+  let response = await originalFetch(url, mergedOptions);
+
+  const isRefreshTokenUrl = typeof url === 'string' && url.includes('/api/auth/refresh-token');
+
+  if (response.status === 401 && !isRefreshTokenUrl) {
+    console.log('🔄 401 Unauthorized detected on mobile, attempting token refresh...');
+    const newToken = await refreshAuthToken();
+    
+    if (newToken) {
+      console.log('✅ Token refreshed, retrying original request...');
+      let retryHeaders = mergedOptions.headers;
+      if (retryHeaders instanceof Headers) {
+        retryHeaders.set('Authorization', `Bearer ${newToken}`);
+      } else if (Array.isArray(retryHeaders)) {
+        retryHeaders = retryHeaders.filter(pair => pair[0] && pair[0].toLowerCase() !== 'authorization');
+        retryHeaders.push(['Authorization', `Bearer ${newToken}`]);
+      } else if (typeof retryHeaders === 'object') {
+        const cleaned = { ...retryHeaders };
+        Object.keys(cleaned).forEach(k => {
+          if (k.toLowerCase() === 'authorization') {
+            delete (cleaned as any)[k];
+          }
+        });
+        retryHeaders = {
+          ...cleaned,
+          'Authorization': `Bearer ${newToken}`
+        };
+      }
+      response = await originalFetch(url, { ...mergedOptions, headers: retryHeaders });
+    } else {
+      console.warn('❌ Token refresh failed, logging out...');
+      await logout();
+    }
+  }
+
+  return response;
+};
+
+
