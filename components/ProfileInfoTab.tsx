@@ -6,7 +6,7 @@ import { Camera, MapPin, Map, CheckCircle2, ChevronDown, User as UserIcon, X, Ca
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import toast from '../services/toast';
-import { getProvinces, getDistrictsByProvince, getWardsByDistrict, Province, District, Ward } from '../services/vietnamAddressApi';
+import { getProvinces, getWardsByProvince, Province, District, Ward } from '../services/vietnamAddressApi';
 import { geocodingService, AddressSuggestion } from '../services/geocodingService';
 import { API_BASE_URL } from '../services/api';
 import SelectModal from './SelectModal';
@@ -44,11 +44,9 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
   });
 
   const [provinces, setProvinces] = useState<Province[]>([]);
-  const [districts, setDistricts] = useState<District[]>([]);
   const [wards, setWards] = useState<Ward[]>([]);
   
   const [selectedProvince, setSelectedProvince] = useState<number | null>(null);
-  const [selectedDistrict, setSelectedDistrict] = useState<number | null>(null);
   const [selectedWard, setSelectedWard] = useState<number | null>(null);
   const [detailedAddress, setDetailedAddress] = useState('');
   const [addressSuggestions, setAddressSuggestions] = useState<AddressSuggestion[]>([]);
@@ -278,28 +276,19 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
 
   useEffect(() => {
     if (selectedProvince) {
-      getDistrictsByProvince(selectedProvince).then(setDistricts).catch(console.error);
-      setSelectedDistrict(null);
+      getWardsByProvince(selectedProvince).then(setWards).catch(console.error);
       setSelectedWard(null);
     }
   }, [selectedProvince]);
 
   useEffect(() => {
-    if (selectedDistrict) {
-      getWardsByDistrict(selectedDistrict).then(setWards).catch(console.error);
-      setSelectedWard(null);
-    }
-  }, [selectedDistrict]);
-
-  useEffect(() => {
-    if (selectedProvince || selectedDistrict || selectedWard || detailedAddress) {
+    if (selectedProvince || selectedWard || detailedAddress) {
       const pName = provinces.find(p => p.code === selectedProvince)?.name || '';
-      const dName = districts.find(d => d.code === selectedDistrict)?.name || '';
       const wName = wards.find(w => w.code === selectedWard)?.name || '';
-      const combined = [detailedAddress, wName, dName, pName].filter(Boolean).join(', ');
+      const combined = [detailedAddress, wName, pName].filter(Boolean).join(', ');
       setForm(prev => ({ ...prev, addressText: combined }));
     }
-  }, [selectedProvince, selectedDistrict, selectedWard, detailedAddress, provinces, districts, wards]);
+  }, [selectedProvince, selectedWard, detailedAddress, provinces, wards]);
 
   useEffect(() => {
     if (!isEditing || selectedExistingAddressId !== null) {
@@ -315,14 +304,13 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
       return;
     }
 
-    const districtName = districts.find((d) => d.code === selectedDistrict)?.name;
     const provinceName = provinces.find((p) => p.code === selectedProvince)?.name;
 
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
         setLoadingAddressSuggestions(true);
-        const suggestions = await geocodingService.suggestAddresses(keyword, districtName, provinceName);
+        const suggestions = await geocodingService.suggestAddresses(keyword, undefined, provinceName);
         if (!cancelled) {
           setAddressSuggestions(suggestions);
         }
@@ -341,15 +329,14 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [isEditing, selectedExistingAddressId, detailedAddress, selectedDistrict, selectedProvince, districts, provinces]);
+  }, [isEditing, selectedExistingAddressId, detailedAddress, selectedProvince, provinces]);
 
   useEffect(() => {
     if (!isEditing || selectedExistingAddressId !== null) return;
 
     const provinceName = provinces.find((p) => p.code === selectedProvince)?.name;
-    const districtName = districts.find((d) => d.code === selectedDistrict)?.name;
     const wardName = wards.find((w) => w.code === selectedWard)?.name;
-    const hasEnoughAddress = !!detailedAddress.trim() && !!provinceName && !!districtName;
+    const hasEnoughAddress = !!detailedAddress.trim() && !!provinceName;
     if (!hasEnoughAddress) return;
 
     let cancelled = false;
@@ -358,7 +345,6 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
         const result = await geocodingService.geocodeAddressComponents({
           detailedAddress: detailedAddress.trim(),
           wardName,
-          districtName,
           provinceName,
         });
 
@@ -378,7 +364,7 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [isEditing, selectedExistingAddressId, selectedProvince, selectedDistrict, selectedWard, detailedAddress, provinces, districts, wards]);
+  }, [isEditing, selectedExistingAddressId, selectedProvince, selectedWard, detailedAddress, provinces, wards]);
 
   const handlePickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -501,17 +487,15 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
     try {
       setLoading(true);
 
-      if (selectedExistingAddressId === null && selectedProvince && selectedDistrict) {
+      if (selectedExistingAddressId === null && selectedProvince) {
         const selectedProvinceName = provinces.find((p) => p.code === selectedProvince)?.name;
-        const selectedDistrictName = districts.find((d) => d.code === selectedDistrict)?.name;
         const selectedWardName = wards.find((w) => w.code === selectedWard)?.name;
 
-        if (selectedProvinceName && selectedDistrictName && detailedAddress.trim()) {
+        if (selectedProvinceName && detailedAddress.trim()) {
           try {
             const geoResult = await geocodingService.geocodeAddressComponents({
               detailedAddress: detailedAddress.trim(),
               wardName: selectedWardName,
-              districtName: selectedDistrictName,
               provinceName: selectedProvinceName,
             });
 
@@ -605,36 +589,22 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
           isNameMatch(reverseData.formattedAddress, province.full_name)
         ));
 
-        let matchedDistrict: District | undefined;
         let matchedWard: Ward | undefined;
 
         if (matchedProvince) {
           setSelectedProvince(matchedProvince.code);
-          const provinceDistricts = await getDistrictsByProvince(matchedProvince.code);
-          setDistricts(provinceDistricts);
+          const provinceWards = await getWardsByProvince(matchedProvince.code);
+          setWards(provinceWards);
 
-          matchedDistrict = provinceDistricts.find((district) => (
-            isNameMatch(reverseData.districtName, district.name) ||
-            isNameMatch(reverseData.districtName, district.full_name) ||
-            isNameMatch(reverseData.formattedAddress, district.name) ||
-            isNameMatch(reverseData.formattedAddress, district.full_name)
+          matchedWard = provinceWards.find((ward) => (
+            isNameMatch(reverseData.wardName, ward.name) ||
+            isNameMatch(reverseData.wardName, ward.full_name) ||
+            isNameMatch(reverseData.formattedAddress, ward.name) ||
+            isNameMatch(reverseData.formattedAddress, ward.full_name)
           ));
 
-          if (matchedDistrict) {
-            setSelectedDistrict(matchedDistrict.code);
-            const districtWards = await getWardsByDistrict(matchedDistrict.code);
-            setWards(districtWards);
-
-            matchedWard = districtWards.find((ward) => (
-              isNameMatch(reverseData.wardName, ward.name) ||
-              isNameMatch(reverseData.wardName, ward.full_name) ||
-              isNameMatch(reverseData.formattedAddress, ward.name) ||
-              isNameMatch(reverseData.formattedAddress, ward.full_name)
-            ));
-
-            if (matchedWard) {
-              setSelectedWard(matchedWard.code);
-            }
+          if (matchedWard) {
+            setSelectedWard(matchedWard.code);
           }
         }
 
@@ -644,10 +614,9 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
           resolvedDetailedAddress;
 
         const provinceText = matchedProvince?.name || reverseData.provinceName || '';
-        const districtText = matchedDistrict?.name || reverseData.districtName || '';
         const wardText = matchedWard?.name || reverseData.wardName || '';
 
-        composedAddress = [resolvedDetailedAddress, wardText, districtText, provinceText]
+        composedAddress = [resolvedDetailedAddress, wardText, provinceText]
           .filter(Boolean)
           .join(', ') || reverseData.formattedAddress || suggestion.displayName;
       }
@@ -696,36 +665,22 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
         isNameMatch(reverseData.formattedAddress, province.full_name)
       ));
 
-      let matchedDistrict: District | undefined;
       let matchedWard: Ward | undefined;
 
       if (matchedProvince) {
         setSelectedProvince(matchedProvince.code);
-        const provinceDistricts = await getDistrictsByProvince(matchedProvince.code);
-        setDistricts(provinceDistricts);
+        const provinceWards = await getWardsByProvince(matchedProvince.code);
+        setWards(provinceWards);
 
-        matchedDistrict = provinceDistricts.find((district) => (
-          isNameMatch(reverseData.districtName, district.name) ||
-          isNameMatch(reverseData.districtName, district.full_name) ||
-          isNameMatch(reverseData.formattedAddress, district.name) ||
-          isNameMatch(reverseData.formattedAddress, district.full_name)
+        matchedWard = provinceWards.find((ward) => (
+          isNameMatch(reverseData.wardName, ward.name) ||
+          isNameMatch(reverseData.wardName, ward.full_name) ||
+          isNameMatch(reverseData.formattedAddress, ward.name) ||
+          isNameMatch(reverseData.formattedAddress, ward.full_name)
         ));
 
-        if (matchedDistrict) {
-          setSelectedDistrict(matchedDistrict.code);
-          const districtWards = await getWardsByDistrict(matchedDistrict.code);
-          setWards(districtWards);
-
-          matchedWard = districtWards.find((ward) => (
-            isNameMatch(reverseData.wardName, ward.name) ||
-            isNameMatch(reverseData.wardName, ward.full_name) ||
-            isNameMatch(reverseData.formattedAddress, ward.name) ||
-            isNameMatch(reverseData.formattedAddress, ward.full_name)
-          ));
-
-          if (matchedWard) {
-            setSelectedWard(matchedWard.code);
-          }
+        if (matchedWard) {
+          setSelectedWard(matchedWard.code);
         }
       }
 
@@ -736,10 +691,9 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
         '';
 
       const provinceText = matchedProvince?.name || reverseData.provinceName || '';
-      const districtText = matchedDistrict?.name || reverseData.districtName || '';
       const wardText = matchedWard?.name || reverseData.wardName || '';
 
-      const composedAddress = [resolvedDetailedAddress, wardText, districtText, provinceText]
+      const composedAddress = [resolvedDetailedAddress, wardText, provinceText]
         .filter(Boolean)
         .join(', ');
 
@@ -1060,7 +1014,6 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
               onPress={() => {
                 setSelectedExistingAddressId(null);
                 setSelectedProvince(null);
-                setSelectedDistrict(null);
                 setSelectedWard(null);
                 setDetailedAddress('');
                 setAddressSuggestions([]);
@@ -1089,7 +1042,6 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
                 onPress={() => {
                   setSelectedExistingAddressId(id);
                   setSelectedProvince(null);
-                  setSelectedDistrict(null);
                   setSelectedWard(null);
                   setDetailedAddress(label);
                   setAddressSuggestions([]);
@@ -1159,34 +1111,17 @@ export default function ProfileInfoTab({ profile, isEditing, setIsEditing, requi
         }}
       />
       
-      <View style={{ flexDirection: 'row', gap: 12 }}>
-        <View style={{ flex: 1 }}>
-          <SelectModal
-            label="Quận / Huyện"
-            placeholder="Chọn quận/huyện"
-            value={selectedDistrict}
-            options={districts.map(d => ({ value: d.code, label: d.name }))}
-            onSelect={(val) => {
-              setSelectedExistingAddressId(null);
-              setSelectedDistrict(val as number);
-            }}
-            disabled={!selectedProvince}
-          />
-        </View>
-        <View style={{ flex: 1 }}>
-          <SelectModal
-            label="Phường / Xã"
-            placeholder="Chọn phường/xã"
-            value={selectedWard}
-            options={wards.map(w => ({ value: w.code, label: w.name }))}
-            onSelect={(val) => {
-              setSelectedExistingAddressId(null);
-              setSelectedWard(val as number);
-            }}
-            disabled={!selectedDistrict}
-          />
-        </View>
-      </View>
+      <SelectModal
+        label="Phường / Xã"
+        placeholder="Chọn phường/xã"
+        value={selectedWard}
+        options={wards.map(w => ({ value: w.code, label: w.name }))}
+        onSelect={(val) => {
+          setSelectedExistingAddressId(null);
+          setSelectedWard(val as number);
+        }}
+        disabled={!selectedProvince}
+      />
 
       <View style={styles.inputGroup}>
         <Text style={styles.inputLabel}>Số nhà, Tên đường</Text>

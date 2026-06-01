@@ -1,5 +1,5 @@
-// Vietnam Address API Service
-// Using free API: https://provinces.open-api.vn/api/
+// Vietnam Address API Service (API v2)
+// Using free API: https://provinces.open-api.vn/api/v2
 
 export interface Province {
   code: number;
@@ -8,6 +8,7 @@ export interface Province {
   full_name: string;
   full_name_en: string;
   code_name: string;
+  codename?: string;
 }
 
 export interface District {
@@ -17,6 +18,7 @@ export interface District {
   full_name: string;
   full_name_en: string;
   code_name: string;
+  codename?: string;
   province_code: number;
 }
 
@@ -27,6 +29,7 @@ export interface Ward {
   full_name: string;
   full_name_en: string;
   code_name: string;
+  codename?: string;
   district_code: number;
 }
 
@@ -34,18 +37,25 @@ export interface ProvinceWithDistricts extends Province {
   districts: District[];
 }
 
+export interface ProvinceWithWards extends Province {
+  wards: Ward[];
+}
+
 export interface DistrictWithWards extends District {
   wards: Ward[];
 }
 
-const BASE_URL = 'https://provinces.open-api.vn/api';
+const BASE_URL = 'https://provinces.open-api.vn/api/v2';
 
 // Cache để lưu dữ liệu đã lấy (tránh gọi API nhiều lần)
 const cache = {
   provinces: null as Province[] | null,
   districts: new Map<number, District[]>(),
   wards: new Map<number, Ward[]>(),
+  provinceWards: new Map<number, Ward[]>(),
 };
+
+const ensureArray = <T>(value: unknown): T[] => (Array.isArray(value) ? value : []);
 
 /**
  * Lấy danh sách tất cả tỉnh/thành phố
@@ -56,13 +66,14 @@ export const getProvinces = async (): Promise<Province[]> => {
   }
 
   try {
-    const response = await fetch(`${BASE_URL}/p/`);
+    const response = await fetch(`${BASE_URL}/p`);
     if (!response.ok) {
       throw new Error('Failed to fetch provinces');
     }
     const data = await response.json();
-    cache.provinces = data;
-    return data;
+    const list = ensureArray<Province>((data as { value?: unknown })?.value ?? data);
+    cache.provinces = list;
+    return list;
   } catch (error) {
     console.error('Error fetching provinces:', error);
     throw error;
@@ -79,9 +90,17 @@ export const getProvinceWithDistricts = async (provinceCode: number): Promise<Pr
       throw new Error('Failed to fetch province with districts');
     }
     const data = await response.json();
+    const districts = ensureArray<District>(data?.districts);
+    const wards = ensureArray<Ward>(data?.wards);
     // Cache districts
-    cache.districts.set(provinceCode, data.districts);
-    return data;
+    cache.districts.set(provinceCode, districts);
+    if (wards.length > 0) {
+      cache.provinceWards.set(provinceCode, wards);
+    }
+    return {
+      ...data,
+      districts,
+    } as ProvinceWithDistricts;
   } catch (error) {
     console.error('Error fetching province with districts:', error);
     throw error;
@@ -99,7 +118,7 @@ export const getDistrictsByProvince = async (provinceCode: number): Promise<Dist
 
   try {
     const data = await getProvinceWithDistricts(provinceCode);
-    return data.districts;
+    return ensureArray<District>(data?.districts);
   } catch (error) {
     console.error('Error fetching districts:', error);
     throw error;
@@ -116,9 +135,13 @@ export const getDistrictWithWards = async (districtCode: number): Promise<Distri
       throw new Error('Failed to fetch district with wards');
     }
     const data = await response.json();
+    const wards = ensureArray<Ward>(data?.wards);
     // Cache wards
-    cache.wards.set(districtCode, data.wards);
-    return data;
+    cache.wards.set(districtCode, wards);
+    return {
+      ...data,
+      wards,
+    } as DistrictWithWards;
   } catch (error) {
     console.error('Error fetching district with wards:', error);
     throw error;
@@ -136,7 +159,7 @@ export const getWardsByDistrict = async (districtCode: number): Promise<Ward[]> 
 
   try {
     const data = await getDistrictWithWards(districtCode);
-    return data.wards;
+    return ensureArray<Ward>(data?.wards);
   } catch (error) {
     console.error('Error fetching wards:', error);
     throw error;
@@ -186,10 +209,34 @@ export const searchWards = async (districtCode: number, query: string): Promise<
 };
 
 /**
+ * Lấy danh sách phường/xã theo tỉnh/thành phố (API v2 chỉ trả wards, không có districts)
+ */
+export const getWardsByProvince = async (provinceCode: number): Promise<Ward[]> => {
+  if (cache.provinceWards.has(provinceCode)) {
+    return cache.provinceWards.get(provinceCode)!;
+  }
+
+  try {
+    const response = await fetch(`${BASE_URL}/p/${provinceCode}?depth=2`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch province with wards');
+    }
+    const data = await response.json();
+    const wards = ensureArray<Ward>(data?.wards);
+    cache.provinceWards.set(provinceCode, wards);
+    return wards;
+  } catch (error) {
+    console.error('Error fetching province wards:', error);
+    throw error;
+  }
+};
+
+/**
  * Clear cache (dùng khi cần refresh data)
  */
 export const clearCache = () => {
   cache.provinces = null;
   cache.districts.clear();
   cache.wards.clear();
+  cache.provinceWards.clear();
 };

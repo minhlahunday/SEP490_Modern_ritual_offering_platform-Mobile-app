@@ -416,11 +416,20 @@ class GeocodingService {
     if (hasRealStreet && wardName && districtName && provinceName) {
       queries.push({ q: `${detailedAddress}, ${wardName}, ${districtName}, ${provinceName}, Vietnam`, district: districtName, province: provinceName });
     }
+    if (hasRealStreet && wardName && provinceName) {
+      queries.push({ q: `${detailedAddress}, ${wardName}, ${provinceName}, Vietnam`, province: provinceName });
+    }
     if (wardName && districtName && provinceName) {
       queries.push({ q: `${wardName}, ${districtName}, ${provinceName}, Vietnam`, district: districtName, province: provinceName });
     }
+    if (wardName && provinceName) {
+      queries.push({ q: `${wardName}, ${provinceName}, Vietnam`, province: provinceName });
+    }
     if (hasRealStreet && districtName && provinceName) {
       queries.push({ q: `${detailedAddress}, ${districtName}, ${provinceName}, Vietnam`, district: districtName, province: provinceName });
+    }
+    if (hasRealStreet && provinceName) {
+      queries.push({ q: `${detailedAddress}, ${provinceName}, Vietnam`, province: provinceName });
     }
     if (districtName && provinceName) {
       queries.push({ q: `${districtName}, ${provinceName}, Vietnam`, province: provinceName });

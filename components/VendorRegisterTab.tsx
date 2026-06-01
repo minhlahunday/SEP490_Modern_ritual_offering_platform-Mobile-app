@@ -5,7 +5,7 @@ import { Camera, MapPin, Store, CheckCircle, Clock, XCircle, FileIcon } from 'lu
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import toast from '../services/toast';
-import { getProvinces, getDistrictsByProvince, getWardsByDistrict, Province, District, Ward } from '../services/vietnamAddressApi';
+import { getProvinces, getWardsByProvince, Province, District, Ward } from '../services/vietnamAddressApi';
 import { geocodingService } from '../services/geocodingService';
 import SelectModal from './SelectModal';
 import AddressMapPicker from './AddressMapPicker';
@@ -37,11 +37,9 @@ export default function VendorRegisterTab() {
   ]);
 
   const [provinces, setProvinces] = useState<Province[]>([]);
-  const [districts, setDistricts] = useState<District[]>([]);
   const [wards, setWards] = useState<Ward[]>([]);
   
   const [selectedProvince, setSelectedProvince] = useState<number | null>(null);
-  const [selectedDistrict, setSelectedDistrict] = useState<number | null>(null);
   const [selectedWard, setSelectedWard] = useState<number | null>(null);
   const [detailedAddress, setDetailedAddress] = useState('');
   const [mapConfirmLoading, setMapConfirmLoading] = useState(false);
@@ -88,28 +86,19 @@ export default function VendorRegisterTab() {
 
   useEffect(() => {
     if (selectedProvince) {
-      getDistrictsByProvince(selectedProvince).then(setDistricts).catch(console.error);
-      setSelectedDistrict(null);
+      getWardsByProvince(selectedProvince).then(setWards).catch(console.error);
       setSelectedWard(null);
     }
   }, [selectedProvince]);
 
   useEffect(() => {
-    if (selectedDistrict) {
-      getWardsByDistrict(selectedDistrict).then(setWards).catch(console.error);
-      setSelectedWard(null);
-    }
-  }, [selectedDistrict]);
-
-  useEffect(() => {
-    if (selectedProvince || selectedDistrict || selectedWard || detailedAddress) {
+    if (selectedProvince || selectedWard || detailedAddress) {
       const pName = provinces.find(p => p.code === selectedProvince)?.name || '';
-      const dName = districts.find(d => d.code === selectedDistrict)?.name || '';
       const wName = wards.find(w => w.code === selectedWard)?.name || '';
-      const combined = [detailedAddress, wName, dName, pName].filter(Boolean).join(', ');
+      const combined = [detailedAddress, wName, pName].filter(Boolean).join(', ');
       setForm(prev => ({ ...prev, shopAddressText: combined }));
     }
-  }, [selectedProvince, selectedDistrict, selectedWard, detailedAddress, provinces, districts, wards]);
+  }, [selectedProvince, selectedWard, detailedAddress, provinces, wards]);
 
   const handlePickAvatar = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -201,36 +190,22 @@ export default function VendorRegisterTab() {
         isNameMatch(reverseData.formattedAddress, province.full_name)
       ));
 
-      let matchedDistrict: District | undefined;
       let matchedWard: Ward | undefined;
 
       if (matchedProvince) {
         setSelectedProvince(matchedProvince.code);
-        const provinceDistricts = await getDistrictsByProvince(matchedProvince.code);
-        setDistricts(provinceDistricts);
+        const provinceWards = await getWardsByProvince(matchedProvince.code);
+        setWards(provinceWards);
 
-        matchedDistrict = provinceDistricts.find((district) => (
-          isNameMatch(reverseData.districtName, district.name) ||
-          isNameMatch(reverseData.districtName, district.full_name) ||
-          isNameMatch(reverseData.formattedAddress, district.name) ||
-          isNameMatch(reverseData.formattedAddress, district.full_name)
+        matchedWard = provinceWards.find((ward) => (
+          isNameMatch(reverseData.wardName, ward.name) ||
+          isNameMatch(reverseData.wardName, ward.full_name) ||
+          isNameMatch(reverseData.formattedAddress, ward.name) ||
+          isNameMatch(reverseData.formattedAddress, ward.full_name)
         ));
 
-        if (matchedDistrict) {
-          setSelectedDistrict(matchedDistrict.code);
-          const districtWards = await getWardsByDistrict(matchedDistrict.code);
-          setWards(districtWards);
-
-          matchedWard = districtWards.find((ward) => (
-            isNameMatch(reverseData.wardName, ward.name) ||
-            isNameMatch(reverseData.wardName, ward.full_name) ||
-            isNameMatch(reverseData.formattedAddress, ward.name) ||
-            isNameMatch(reverseData.formattedAddress, ward.full_name)
-          ));
-
-          if (matchedWard) {
-            setSelectedWard(matchedWard.code);
-          }
+        if (matchedWard) {
+          setSelectedWard(matchedWard.code);
         }
       }
 
@@ -241,10 +216,9 @@ export default function VendorRegisterTab() {
         '';
 
       const provinceText = matchedProvince?.name || reverseData.provinceName || '';
-      const districtText = matchedDistrict?.name || reverseData.districtName || '';
       const wardText = matchedWard?.name || reverseData.wardName || '';
 
-      const composedAddress = [resolvedDetailedAddress, wardText, districtText, provinceText]
+      const composedAddress = [resolvedDetailedAddress, wardText, provinceText]
         .filter(Boolean)
         .join(', ');
 
@@ -292,17 +266,15 @@ export default function VendorRegisterTab() {
       setIsRegistering(true);
 
       const selectedProvinceName = provinces.find((p) => p.code === selectedProvince)?.name;
-      const selectedDistrictName = districts.find((d) => d.code === selectedDistrict)?.name;
       const selectedWardName = wards.find((w) => w.code === selectedWard)?.name;
 
       let resolvedLat = form.shopLatitude;
       let resolvedLng = form.shopLongitude;
-      if (selectedProvinceName && selectedDistrictName && detailedAddress.trim()) {
+      if (selectedProvinceName && detailedAddress.trim()) {
         try {
           const geoResult = await geocodingService.geocodeAddressComponents({
             detailedAddress: detailedAddress.trim(),
             wardName: selectedWardName,
-            districtName: selectedDistrictName,
             provinceName: selectedProvinceName,
           });
           if (geoResult) {
@@ -544,28 +516,14 @@ export default function VendorRegisterTab() {
         onSelect={(val) => setSelectedProvince(val as number)}
       />
       
-      <View style={{ flexDirection: 'row', gap: 12 }}>
-        <View style={{ flex: 1 }}>
-          <SelectModal
-            label="Quận / Huyện"
-            placeholder="Chọn quận/huyện"
-            value={selectedDistrict}
-            options={districts.map(d => ({ value: d.code, label: d.name }))}
-            onSelect={(val) => setSelectedDistrict(val as number)}
-            disabled={!selectedProvince}
-          />
-        </View>
-        <View style={{ flex: 1 }}>
-          <SelectModal
-            label="Phường / Xã"
-            placeholder="Chọn phường/xã"
-            value={selectedWard}
-            options={wards.map(w => ({ value: w.code, label: w.name }))}
-            onSelect={(val) => setSelectedWard(val as number)}
-            disabled={!selectedDistrict}
-          />
-        </View>
-      </View>
+      <SelectModal
+        label="Phường / Xã"
+        placeholder="Chọn phường/xã"
+        value={selectedWard}
+        options={wards.map(w => ({ value: w.code, label: w.name }))}
+        onSelect={(val) => setSelectedWard(val as number)}
+        disabled={!selectedProvince}
+      />
 
       <View style={styles.inputGroup}>
         <Text style={styles.inputLabel}>Số nhà, Tên đường</Text>
